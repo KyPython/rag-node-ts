@@ -19,6 +19,8 @@ import { loadConfig } from './utils/config.js';
 import { requestIdMiddleware } from './middleware/requestId.js';
 import { errorHandler, AppError, validationError } from './middleware/errorHandler.js';
 import { metricsMiddleware, metricsHandler } from './metrics/metrics.js';
+import { getCache, generateCacheKey } from './cache/cache.js';
+import { truncateContexts } from './utils/truncation.js';
 
 // Load environment variables
 dotenv.config();
@@ -36,6 +38,11 @@ try {
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Initialize cache
+const cache = getCache();
+const CACHE_TTL_SECONDS = parseInt(process.env.CACHE_TTL_SECONDS || '300', 10); // Default 5 minutes
+const MAX_CONTEXT_LENGTH = parseInt(process.env.MAX_CONTEXT_LENGTH || '8000', 10); // Default 8K chars
 
 // ============================================================================
 // MIDDLEWARE (ORDER MATTERS)
@@ -149,11 +156,13 @@ app.post('/query', async (req: Request, res: Response, next: NextFunction) => {
   let retrievalDuration: number;
   let answerStartTime: number;
   let answerDuration: number;
+  let cacheHit = false;
 
   try {
     const body = req.body as QueryRequest;
     const queryParams = req.query as QueryParams;
     const mode = queryParams.mode || 'answer';
+    const cacheEnabled = req.query.cacheMode !== 'off';
 
     // Validate request body using AppError
     if (!body.query || typeof body.query !== 'string') {
@@ -171,6 +180,41 @@ app.post('/query', async (req: Request, res: Response, next: NextFunction) => {
         { topK }
       );
     }
+
+    // Check cache if enabled
+    if (cacheEnabled) {
+      const cacheKey = generateCacheKey(body.query, topK, mode);
+      const cachedResponse = await cache.get(cacheKey);
+
+      if (cachedResponse) {
+        cacheHit = true;
+        const totalDuration = Date.now() - requestStartTime;
+        
+        logger.info('Query served from cache', {
+          requestId: req.requestId,
+          query: body.query,
+          mode,
+          cacheKey,
+          durationMs: totalDuration,
+        });
+
+        res.json({
+          requestId: req.requestId,
+          data: JSON.parse(cachedResponse),
+          _cached: true, // Indicator for testing/debugging
+        });
+        return;
+      }
+    }
+
+    logger.info('Processing query request (cache miss)', {
+      requestId: req.requestId,
+      query: body.query,
+      queryLength: body.query.length,
+      mode,
+      topK,
+      cacheEnabled,
+    });
 
     logger.info('Processing query request', {
       requestId: req.requestId,
@@ -208,7 +252,21 @@ app.post('/query', async (req: Request, res: Response, next: NextFunction) => {
         query: body.query,
         passagesCount: retrievedPassages.length,
         totalDurationMs: totalDuration,
+        cacheHit: false,
       });
+
+      // Cache retrieval-only responses too
+      if (cacheEnabled) {
+        const cacheKey = generateCacheKey(body.query, topK, mode);
+        const responseToCache = JSON.stringify(response.data);
+        
+        await cache.set(cacheKey, responseToCache, CACHE_TTL_SECONDS).catch((err) => {
+          logger.warn('Failed to cache response', {
+            requestId: req.requestId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      }
 
       res.json(response);
       return;
@@ -218,10 +276,21 @@ app.post('/query', async (req: Request, res: Response, next: NextFunction) => {
     answerStartTime = Date.now();
     
     // Convert RetrievedPassage[] to Context[] format
-    const contexts: Context[] = retrievedPassages.map((passage) => ({
+    let contexts: Context[] = retrievedPassages.map((passage) => ({
       text: passage.text,
       score: passage.score,
       metadata: passage.metadata,
+    }));
+
+    // Apply truncation to limit context size and control costs
+    // In production, use proper token counting (e.g., tiktoken)
+    const contextTexts = contexts.map((ctx) => ctx.text);
+    const truncatedTexts = truncateContexts(contextTexts, MAX_CONTEXT_LENGTH);
+    
+    // Update contexts with truncated texts (preserve metadata)
+    contexts = contexts.map((ctx, index) => ({
+      ...ctx,
+      text: truncatedTexts[index] || ctx.text,
     }));
 
     const answerResult = await generateAnswer(body.query, contexts);
@@ -254,7 +323,22 @@ app.post('/query', async (req: Request, res: Response, next: NextFunction) => {
       retrievalDurationMs: retrievalDuration,
       answerGenerationDurationMs: answerDuration,
       totalDurationMs: totalDuration,
+      cacheHit: false,
     });
+
+    // Cache the response if cache is enabled
+    if (cacheEnabled) {
+      const cacheKey = generateCacheKey(body.query, topK, mode);
+      const responseToCache = JSON.stringify(response.data);
+      
+      await cache.set(cacheKey, responseToCache, CACHE_TTL_SECONDS).catch((err) => {
+        // Log but don't fail the request if caching fails
+        logger.warn('Failed to cache response', {
+          requestId: req.requestId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    }
 
     res.json(response);
   } catch (error) {

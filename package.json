@@ -9,6 +9,7 @@
     "start": "node dist/index.js",
     "ingest": "ts-node-dev src/scripts/ingestLocal.ts",
     "setup-pinecone": "ts-node-dev src/scripts/setupPinecone.ts",
+    "bench": "ts-node-dev src/benchmark/benchmark.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -23,6 +24,7 @@
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
+    "ioredis": "^5.8.2",
     "langchain": "^1.1.5",
     "morgan": "^1.10.1",
     "openai": "^6.10.0",
@@ -32,6 +34,7 @@
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
+    "@types/ioredis": "^4.28.10",
     "@types/morgan": "^1.9.10",
     "@types/node": "^24.10.1",
     "@types/pdf-parse": "^1.1.5",

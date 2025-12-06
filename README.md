@@ -153,6 +153,42 @@ curl -X POST "http://localhost:3000/query?mode=retrieval" \
 
 See [TESTING.md](./TESTING.md) for more examples.
 
+## Performance & Benchmarking
+
+### Caching
+
+The API includes built-in caching to reduce LLM API costs and improve latency:
+- **In-memory cache** (default): Fast, single-instance caching
+- **Redis cache**: Distributed caching for production (set `REDIS_URL`)
+
+Cache can be disabled per-request: `?cacheMode=off`
+
+### Benchmarking
+
+Run performance benchmarks to measure API latency:
+
+```bash
+# Benchmark with cache enabled (default)
+npm run bench -- --url http://localhost:3000 --concurrency 5 --requests 20 --cacheMode on
+
+# Benchmark with cache disabled
+npm run bench -- --url http://localhost:3000 --concurrency 5 --requests 20 --cacheMode off
+
+# Compare the results - cache hits should be 10-100x faster!
+```
+
+Benchmark options:
+- `--url`: API base URL (default: `http://localhost:3000`)
+- `--concurrency`: Number of parallel requests (default: 5)
+- `--requests`: Total number of requests (default: 20)
+- `--cacheMode`: `on` or `off` (default: `on`)
+
+The benchmark reports:
+- Average latency
+- P95 latency
+- Success rate
+- Min/Max latency
+
 ## Project Structure
 
 ```
@@ -180,6 +216,9 @@ src/
 | `PINECONE_ENVIRONMENT` | No | Pinecone environment (if required) |
 | `PORT` | No | Server port (default: 3000) |
 | `NODE_ENV` | No | Environment (development/production) |
+| `REDIS_URL` | No | Redis connection URL for distributed caching (optional, falls back to in-memory) |
+| `CACHE_TTL_SECONDS` | No | Cache time-to-live in seconds (default: 300) |
+| `MAX_CONTEXT_LENGTH` | No | Maximum context characters for LLM (default: 8000) |
 
 ## Deployment
 
