@@ -51,6 +51,20 @@ const requestLogger = (req: Request, res: Response, next: NextFunction): void =>
 
 app.use(requestLogger);
 
+// Root endpoint - API information
+app.get('/', (_req: Request, res: Response) => {
+  res.json({
+    service: 'RAG Node.js TypeScript Service',
+    version: '1.0.0',
+    endpoints: {
+      health: 'GET /health',
+      query: 'POST /query',
+    },
+    documentation: 'https://github.com/KyPython/rag-node-ts',
+    timestamp: new Date().toISOString(),
+  });
+});
+
 // Health check endpoint
 app.get('/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
