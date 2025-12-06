@@ -1,9 +1,24 @@
+/**
+ * Production RAG HTTP API Server
+ * 
+ * A production-ready Express server with:
+ * - Request ID tracking for all requests
+ * - Structured error handling
+ * - Prometheus metrics
+ * - Comprehensive HTTP logging
+ * - RAG query endpoints
+ */
+
 import express, { type Request, type Response, type NextFunction } from 'express';
 import dotenv from 'dotenv';
+import morgan from 'morgan';
 import { retrieveRelevantPassages, type RetrievedPassage } from './rag/retriever.js';
 import { generateAnswer, type Context } from './llm/answer.js';
 import { logger } from './utils/logger.js';
 import { loadConfig } from './utils/config.js';
+import { requestIdMiddleware } from './middleware/requestId.js';
+import { errorHandler, AppError, validationError } from './middleware/errorHandler.js';
+import { metricsMiddleware, metricsHandler } from './metrics/metrics.js';
 
 // Load environment variables
 dotenv.config();
@@ -22,72 +37,101 @@ try {
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
+// ============================================================================
+// MIDDLEWARE (ORDER MATTERS)
+// ============================================================================
+
+// 1. Request ID middleware - must be first to attach requestId to all requests
+app.use(requestIdMiddleware);
+
+// 2. Metrics middleware - record metrics for all requests
+app.use(metricsMiddleware);
+
+// 3. Body parsing
 app.use(express.json());
 
-// Request logger middleware using structured logger
-const requestLogger = (req: Request, res: Response, next: NextFunction): void => {
-  const startTime = Date.now();
-  
-  logger.info('Incoming request', {
-    method: req.method,
-    path: req.path,
-    ...(req.method === 'POST' && { bodySize: JSON.stringify(req.body).length }),
-  });
-  
-  // Log response status after response is sent
-  res.on('finish', () => {
-    const duration = Date.now() - startTime;
-    logger.info('Request completed', {
-      method: req.method,
-      path: req.path,
-      statusCode: res.statusCode,
-      durationMs: duration,
-    });
-  });
-  
-  next();
-};
+// 4. HTTP request logging with morgan
+// Include requestId in logs using custom token
+morgan.token('request-id', (req: Request) => req.requestId);
+morgan.token('request-body-size', (req: Request) => {
+  if (req.method === 'POST' || req.method === 'PUT') {
+    return JSON.stringify(req.body).length.toString();
+  }
+  return '-';
+});
 
-app.use(requestLogger);
+const morganFormat = ':remote-addr - :remote-user [:date[clf]] ":method :url HTTP/:http-version" :status :res[content-length] ":referrer" ":user-agent" [request-id: :request-id] :response-time ms';
+app.use(morgan(morganFormat, {
+  stream: {
+    write: (message: string) => {
+      // Morgan writes to stdout, but we can integrate with our logger if needed
+      process.stdout.write(message);
+    },
+  },
+}));
 
-// Root endpoint - API information
-app.get('/', (_req: Request, res: Response) => {
+// ============================================================================
+// ROUTES
+// ============================================================================
+
+/**
+ * Root endpoint - API information
+ * Fast, no external dependencies
+ */
+app.get('/', (req: Request, res: Response) => {
   res.json({
+    requestId: req.requestId,
     service: 'RAG Node.js TypeScript Service',
     version: '1.0.0',
     endpoints: {
       health: 'GET /health',
       query: 'POST /query',
+      metrics: 'GET /metrics',
     },
     documentation: 'https://github.com/KyPython/rag-node-ts',
     timestamp: new Date().toISOString(),
   });
 });
 
-// Health check endpoint
-app.get('/health', (_req: Request, res: Response) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+/**
+ * Health check endpoint
+ * Fast, no external dependencies - used for load balancer health checks
+ */
+app.get('/health', (req: Request, res: Response) => {
+  res.json({
+    requestId: req.requestId,
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+  });
 });
 
-// Query endpoint for RAG retrieval and answer generation
+/**
+ * Metrics endpoint - Prometheus format
+ * Fast, no external dependencies - exposes Prometheus metrics
+ */
+app.get('/metrics', metricsHandler);
+
+/**
+ * Query endpoint for RAG retrieval and answer generation
+ * 
+ * Supports two modes:
+ * - Retrieval-only: ?mode=retrieval
+ * - Full RAG answer: default
+ */
 interface QueryRequest {
   query: string;
   topK?: number;
 }
 
-// Query parameter: mode can be 'retrieval' or 'answer' (default: 'answer')
 interface QueryParams {
   mode?: 'retrieval' | 'answer';
 }
 
-// Response for retrieval-only mode
 interface RetrievalResponse {
   query: string;
   results: RetrievedPassage[];
 }
 
-// Response for full RAG answer mode
 interface AnswerResponse {
   query: string;
   answer: string;
@@ -99,49 +143,6 @@ interface AnswerResponse {
   }[];
 }
 
-/**
- * /query endpoint with dual modes:
- * 
- * 1. Retrieval-only mode (?mode=retrieval):
- *    - Returns only retrieved passages without LLM answer generation
- *    - Useful for debugging, testing retrieval quality, or building custom answer pipelines
- * 
- * 2. Full RAG answer mode (default, ?mode=answer or no mode param):
- *    - Retrieves passages, generates LLM answer, and extracts citations
- *    - Returns structured response with answer text and cited passages
- * 
- * Frontend Highlighting Guide:
- * 
- * To visually highlight cited passages in the answer:
- * 
- * 1. Parse the answer text for citation markers [p0], [p1], etc.
- * 2. Replace markers with clickable links or styled spans:
- *    - Example: "[p0]" → "<span class='citation' data-index='0'>[0]</span>"
- *    - Or: "[p0]" → "<a href='#passage-0' class='citation-link'>[0]</a>"
- * 
- * 3. Display cited passages in a separate section:
- *    - Map citation indices to the citations array
- *    - Show passage text, relevance score, and source metadata
- *    - Allow users to click citations to jump to source passages
- * 
- * 4. Optional: Highlight matching query terms in both answer and passages
- *    - Use text highlighting libraries or simple regex replacements
- * 
- * Example frontend rendering:
- * ```
- * <div class="answer">{answerWithHighlightedCitations}</div>
- * <div class="sources">
- *   <h3>Cited Sources ({citations.length})</h3>
- *   {citations.map(citation => (
- *     <div class="passage" id={`passage-${citation.index}`}>
- *       <span class="score">Score: {citation.score}</span>
- *       <p>{citation.text}</p>
- *       <span class="source">{citation.metadata.source}</span>
- *     </div>
- *   ))}
- * </div>
- * ```
- */
 app.post('/query', async (req: Request, res: Response, next: NextFunction) => {
   const requestStartTime = Date.now();
   let retrievalStartTime: number;
@@ -154,26 +155,25 @@ app.post('/query', async (req: Request, res: Response, next: NextFunction) => {
     const queryParams = req.query as QueryParams;
     const mode = queryParams.mode || 'answer';
 
-    // Validate request body
+    // Validate request body using AppError
     if (!body.query || typeof body.query !== 'string') {
-      res.status(400).json({
-        error: 'Invalid request',
-        message: 'Request body must contain a "query" field of type string',
-      });
-      return;
+      throw validationError(
+        'Request body must contain a "query" field of type string',
+        { body: req.body }
+      );
     }
 
     // Validate topK if provided
     const topK = body.topK ?? 5;
     if (typeof topK !== 'number' || topK < 1 || topK > 100) {
-      res.status(400).json({
-        error: 'Invalid request',
-        message: 'topK must be a number between 1 and 100',
-      });
-      return;
+      throw validationError(
+        'topK must be a number between 1 and 100',
+        { topK }
+      );
     }
 
     logger.info('Processing query request', {
+      requestId: req.requestId,
       query: body.query,
       queryLength: body.query.length,
       mode,
@@ -186,6 +186,7 @@ app.post('/query', async (req: Request, res: Response, next: NextFunction) => {
     retrievalDuration = Date.now() - retrievalStartTime;
 
     logger.info('Retrieval completed', {
+      requestId: req.requestId,
       query: body.query,
       passagesCount: retrievedPassages.length,
       retrievalDurationMs: retrievalDuration,
@@ -193,13 +194,17 @@ app.post('/query', async (req: Request, res: Response, next: NextFunction) => {
 
     // Step 2: If retrieval-only mode, return early
     if (mode === 'retrieval') {
-      const response: RetrievalResponse = {
-        query: body.query,
-        results: retrievedPassages,
+      const response = {
+        requestId: req.requestId,
+        data: {
+          query: body.query,
+          results: retrievedPassages,
+        } as RetrievalResponse,
       };
 
       const totalDuration = Date.now() - requestStartTime;
       logger.info('Query completed (retrieval-only mode)', {
+        requestId: req.requestId,
         query: body.query,
         passagesCount: retrievedPassages.length,
         totalDurationMs: totalDuration,
@@ -230,14 +235,18 @@ app.post('/query', async (req: Request, res: Response, next: NextFunction) => {
       metadata: retrievedPassages[index]?.metadata || {},
     }));
 
-    const response: AnswerResponse = {
-      query: body.query,
-      answer: answerResult.answer,
-      citations,
+    const response = {
+      requestId: req.requestId,
+      data: {
+        query: body.query,
+        answer: answerResult.answer,
+        citations,
+      } as AnswerResponse,
     };
 
     const totalDuration = Date.now() - requestStartTime;
     logger.info('Query completed (full RAG mode)', {
+      requestId: req.requestId,
       query: body.query,
       passagesRetrieved: retrievedPassages.length,
       citationsCount: citations.length,
@@ -249,56 +258,40 @@ app.post('/query', async (req: Request, res: Response, next: NextFunction) => {
 
     res.json(response);
   } catch (error) {
-    const totalDuration = Date.now() - requestStartTime;
-    logger.error('Query processing failed', {
-      query: req.body?.query,
-      error: error instanceof Error ? error.message : String(error),
-      totalDurationMs: totalDuration,
-    });
-
-    // Pass error to error handling middleware
+    // Pass error to error handler middleware
     next(error);
   }
 });
 
-// Error handling middleware
-interface ErrorResponse {
-  error: string;
-  message: string;
-  timestamp: string;
-}
+// ============================================================================
+// ERROR HANDLING (MUST BE LAST)
+// ============================================================================
 
-app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
-  logger.error('Request error', {
-    message: err.message,
-    stack: err.stack,
-    path: req.path,
-    method: req.method,
-  });
-
-  const errorResponse: ErrorResponse = {
-    error: 'Internal Server Error',
-    message: process.env.NODE_ENV === 'development' ? err.message : 'An unexpected error occurred',
-    timestamp: new Date().toISOString(),
-  };
-
-  res.status(500).json(errorResponse);
+// 404 handler - catches unmatched routes
+app.use((req: Request, res: Response, next: NextFunction) => {
+  next(new AppError(
+    `Route ${req.method} ${req.path} not found`,
+    404,
+    'NOT_FOUND'
+  ));
 });
 
-// 404 handler
-app.use((req: Request, res: Response) => {
-  res.status(404).json({
-    error: 'Not Found',
-    message: `Route ${req.method} ${req.path} not found`,
-  });
-});
+// Centralized error handler - must be last
+app.use(errorHandler);
 
-// Start server
+// ============================================================================
+// SERVER STARTUP
+// ============================================================================
+
 app.listen(PORT, () => {
   logger.info('Server started', {
     port: PORT,
-    healthEndpoint: `http://localhost:${PORT}/health`,
-    queryEndpoint: `http://localhost:${PORT}/query`,
+    environment: process.env.NODE_ENV || 'development',
+    endpoints: {
+      root: `http://localhost:${PORT}/`,
+      health: `http://localhost:${PORT}/health`,
+      query: `http://localhost:${PORT}/query`,
+      metrics: `http://localhost:${PORT}/metrics`,
+    },
   });
 });
-

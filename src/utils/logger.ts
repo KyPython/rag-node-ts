@@ -14,6 +14,7 @@ export interface LogEntry {
 
 /**
  * Logs a structured JSON entry to stdout/stderr
+ * Automatically includes requestId from meta if present
  */
 function log(level: LogLevel, message: string, meta?: Record<string, unknown>): void {
   const entry: LogEntry = {
@@ -26,6 +27,16 @@ function log(level: LogLevel, message: string, meta?: Record<string, unknown>): 
   const output = JSON.stringify(entry);
   const stream = level === 'error' ? process.stderr : process.stdout;
   stream.write(output + '\n');
+}
+
+/**
+ * Helper to create log metadata with requestId
+ */
+export function withRequestId(requestId: string, meta?: Record<string, unknown>): Record<string, unknown> {
+  return {
+    requestId,
+    ...meta,
+  };
 }
 
 export const logger = {
