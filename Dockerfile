@@ -7,7 +7,8 @@ COPY package.json package-lock.json* ./
 
 # Install dependencies
 # Use npm install if package-lock.json doesn't exist, otherwise use npm ci for faster, reliable builds
-RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
+# --legacy-peer-deps is needed to handle peer dependency conflicts (e.g., dotenv version mismatch)
+RUN if [ -f package-lock.json ]; then npm ci --legacy-peer-deps; else npm install --legacy-peer-deps; fi
 
 # Copy source files
 COPY . .
@@ -24,7 +25,8 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 
 # Install production dependencies only
-RUN if [ -f package-lock.json ]; then npm ci --only=production; else npm install --only=production; fi
+# --legacy-peer-deps is needed to handle peer dependency conflicts
+RUN if [ -f package-lock.json ]; then npm ci --only=production --legacy-peer-deps; else npm install --only=production --legacy-peer-deps; fi
 
 # Copy built files from builder
 COPY --from=builder /app/dist ./dist
