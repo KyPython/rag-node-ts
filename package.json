@@ -10,6 +10,8 @@
     "ingest": "ts-node-dev src/scripts/ingestLocal.ts",
     "setup-pinecone": "ts-node-dev src/scripts/setupPinecone.ts",
     "bench": "ts-node-dev src/benchmark/benchmark.ts",
+    "demo": "npm run dev",
+    "demo-setup": "bash scripts/demo-setup.sh",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

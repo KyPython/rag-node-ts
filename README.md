@@ -2,6 +2,8 @@
 
 A production-ready RAG (Retrieval-Augmented Generation) HTTP service built with Node.js, Express, TypeScript, LangChain, OpenAI, and Pinecone.
 
+**Perfect for portfolio demos, consulting projects, or SaaS productization.**
+
 ## Features
 
 - 📄 **Document Ingestion**: Parse PDF and Markdown files, chunk text, and store embeddings in Pinecone
@@ -10,6 +12,10 @@ A production-ready RAG (Retrieval-Augmented Generation) HTTP service built with 
 - 📊 **Structured Logging**: JSON-formatted logs for observability
 - 🔗 **Citation Tracking**: Track which passages were used to generate answers
 - ⚡ **Dual Query Modes**: Retrieval-only or full RAG answer generation
+- 🎨 **Demo UI**: Beautiful web interface for easy portfolio demonstrations
+- 💾 **Caching**: Redis or in-memory caching for cost reduction
+- 📈 **Metrics**: Prometheus metrics for observability
+- 🎯 **Production-Ready**: Request IDs, error handling, comprehensive logging
 
 ## Tech Stack
 
@@ -54,6 +60,23 @@ A production-ready RAG (Retrieval-Augmented Generation) HTTP service built with 
    npm run build
    ```
 
+## Quick Start Demo
+
+For portfolio demos and quick testing:
+
+```bash
+# 1. Setup (one-time)
+npm run demo-setup
+
+# 2. Start server
+npm run demo
+
+# 3. Open demo UI
+# Visit: http://localhost:3000
+```
+
+The demo UI provides an interactive interface to test the RAG system. Sample documents are automatically ingested.
+
 ## Usage
 
 ### Development
@@ -62,6 +85,8 @@ Start the development server with hot reload:
 ```bash
 npm run dev
 ```
+
+The demo UI is available at `http://localhost:3000` when the server is running.
 
 ### Production
 
