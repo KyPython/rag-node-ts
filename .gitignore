@@ -45,3 +45,6 @@ temp/
 
 # Snyk Security Extension - AI Rules (auto-generated)
 .cursor/rules/snyk_rules.mdc
+
+# Study materials (private)
+STUDY_GUIDE.md
