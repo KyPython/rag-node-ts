@@ -118,14 +118,3 @@ export async function retrieveRelevantPassages(
     throw error;
   }
 }
-
-/**
- * Wrapper function that maintains compatibility with the old fake retriever interface
- * @deprecated Use retrieveRelevantPassages instead
- */
-export async function retrieve(
-  query: string,
-  topK: number = 3
-): Promise<RetrievedPassage[]> {
-  return retrieveRelevantPassages(query, topK);
-}
