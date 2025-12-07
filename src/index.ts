@@ -48,6 +48,9 @@ const MAX_CONTEXT_LENGTH = parseInt(process.env.MAX_CONTEXT_LENGTH || '8000', 10
 // MIDDLEWARE (ORDER MATTERS)
 // ============================================================================
 
+// 0. Serve static files (demo UI) - before other middleware
+app.use(express.static('public'));
+
 // 1. Request ID middleware - must be first to attach requestId to all requests
 app.use(requestIdMiddleware);
 
