@@ -76,20 +76,3 @@ export function truncateContexts(
   return result;
 }
 
-/**
- * Estimate token count from text (rough approximation)
- * Actual tokenization should use a proper tokenizer like tiktoken
- * 
- * Rule of thumb: ~4 characters = 1 token for English text
- * 
- * @param text Text to estimate tokens for
- * @returns Approximate token count
- */
-export function estimateTokenCount(text: string): number {
-  // Simple heuristic: ~4 characters per token
-  // For accurate counting, use: import { encoding_for_model } from 'tiktoken';
-  // const encoding = encoding_for_model('gpt-4');
-  // return encoding.encode(text).length;
-  return Math.ceil(text.length / 4);
-}
-
