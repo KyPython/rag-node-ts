@@ -32,13 +32,6 @@ function log(level: LogLevel, message: string, meta?: Record<string, unknown>): 
 /**
  * Helper to create log metadata with requestId
  */
-export function withRequestId(requestId: string, meta?: Record<string, unknown>): Record<string, unknown> {
-  return {
-    requestId,
-    ...meta,
-  };
-}
-
 export const logger = {
   info: (message: string, meta?: Record<string, unknown>) => log('info', message, meta),
   error: (message: string, meta?: Record<string, unknown>) => log('error', message, meta),
