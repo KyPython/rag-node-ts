@@ -12,15 +12,27 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
 import dotenv from 'dotenv';
 import morgan from 'morgan';
+import multer from 'multer';
 import { retrieveRelevantPassages, type RetrievedPassage } from './rag/retriever.js';
+import { ingestText, ingestDocuments } from './rag/ingest.js';
 import { generateAnswer, type Context } from './llm/answer.js';
 import { logger } from './utils/logger.js';
 import { loadConfig } from './utils/config.js';
 import { requestIdMiddleware } from './middleware/requestId.js';
+import { apiKeyAuth, getTenantNamespace } from './middleware/apiKeyAuth.js';
+import { rateLimiter } from './middleware/rateLimiter.js';
 import { errorHandler, AppError, validationError } from './middleware/errorHandler.js';
 import { metricsMiddleware, metricsHandler } from './metrics/metrics.js';
 import { getCache, generateCacheKey } from './cache/cache.js';
 import { truncateContexts } from './utils/truncation.js';
+import { trackUsage } from './services/usageTracker.js';
+import { adminRouter } from './routes/admin.js';
+
+// File upload configuration
+const upload = multer({
+  dest: 'uploads/',
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+});
 
 // Load environment variables
 dotenv.config();
@@ -38,6 +50,9 @@ try {
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Security: Disable X-Powered-By header to prevent information leakage
+app.disable('x-powered-by');
 
 // Initialize cache
 const cache = getCache();
@@ -84,6 +99,9 @@ app.use(morgan(morganFormat, {
 // ROUTES
 // ============================================================================
 
+// Admin routes (protected by admin key)
+app.use('/admin', adminRouter);
+
 /**
  * Root endpoint - API information
  * Fast, no external dependencies
@@ -91,12 +109,15 @@ app.use(morgan(morganFormat, {
 app.get('/', (req: Request, res: Response) => {
   res.json({
     requestId: req.requestId,
-    service: 'RAG Node.js TypeScript Service',
+    service: 'RAG-as-a-Service',
     version: '1.0.0',
     endpoints: {
       health: 'GET /health',
       query: 'POST /query',
+      ingest: 'POST /ingest/text',
+      ingestBatch: 'POST /ingest/batch',
       metrics: 'GET /metrics',
+      admin: 'GET /admin/* (requires admin key)',
     },
     documentation: 'https://github.com/KyPython/rag-node-ts',
     timestamp: new Date().toISOString(),
@@ -153,7 +174,8 @@ interface AnswerResponse {
   }[];
 }
 
-app.post('/query', async (req: Request, res: Response, next: NextFunction) => {
+// Apply API key auth and rate limiting to query endpoint
+app.post('/query', apiKeyAuth({ required: false }), rateLimiter(), async (req: Request, res: Response, next: NextFunction) => {
   const requestStartTime = Date.now();
   let retrievalStartTime: number;
   let retrievalDuration: number;
@@ -227,9 +249,10 @@ app.post('/query', async (req: Request, res: Response, next: NextFunction) => {
       topK,
     });
 
-    // Step 1: Retrieve relevant passages
+    // Step 1: Retrieve relevant passages (with tenant namespace for multi-tenancy)
+    const namespace = getTenantNamespace(req);
     retrievalStartTime = Date.now();
-    const retrievedPassages = await retrieveRelevantPassages(body.query, topK);
+    const retrievedPassages = await retrieveRelevantPassages(body.query, topK, namespace);
     retrievalDuration = Date.now() - retrievalStartTime;
 
     logger.info('Retrieval completed', {
@@ -329,6 +352,19 @@ app.post('/query', async (req: Request, res: Response, next: NextFunction) => {
       cacheHit: false,
     });
 
+    // Track usage for billing
+    trackUsage({
+      tenantId: req.tenant?.id || 'anonymous',
+      timestamp: new Date(),
+      endpoint: '/query',
+      requestId: req.requestId || 'unknown',
+      embeddingTokens: Math.ceil(body.query.length / 4), // Rough estimate
+      llmPromptTokens: Math.ceil(contexts.reduce((sum, c) => sum + c.text.length, 0) / 4),
+      llmCompletionTokens: Math.ceil(answerResult.answer.length / 4),
+      durationMs: totalDuration,
+      chunksRetrieved: retrievedPassages.length,
+    });
+
     // Cache the response if cache is enabled
     if (cacheEnabled) {
       const cacheKey = generateCacheKey(body.query, topK, mode);
@@ -346,6 +382,200 @@ app.post('/query', async (req: Request, res: Response, next: NextFunction) => {
     res.json(response);
   } catch (error) {
     // Pass error to error handler middleware
+    next(error);
+  }
+});
+
+// ============================================================================
+// INGEST ENDPOINTS (Multi-tenant)
+// ============================================================================
+
+/**
+ * Ingest text content directly via API
+ * Great for ingesting app knowledge, documentation, etc.
+ */
+interface IngestTextRequest {
+  text: string;
+  source: string;
+  metadata?: Record<string, unknown>;
+}
+
+app.post('/ingest/text', apiKeyAuth({ required: true }), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const body = req.body as IngestTextRequest;
+    const namespace = getTenantNamespace(req);
+
+    // Validate request
+    if (!body.text || typeof body.text !== 'string') {
+      throw validationError('Request body must contain a "text" field of type string', { body: req.body });
+    }
+
+    if (!body.source || typeof body.source !== 'string') {
+      throw validationError('Request body must contain a "source" field of type string', { body: req.body });
+    }
+
+    logger.info('Processing text ingestion request', {
+      requestId: req.requestId,
+      tenantId: req.tenant?.id,
+      namespace,
+      source: body.source,
+      textLength: body.text.length,
+    });
+
+    const result = await ingestText(body.text, body.source, namespace, body.metadata || {});
+
+    if (!result.success) {
+      return res.status(500).json({
+        requestId: req.requestId,
+        success: false,
+        error: result.error,
+      });
+    }
+
+    res.json({
+      requestId: req.requestId,
+      success: true,
+      data: {
+        source: result.filePath,
+        chunksProcessed: result.chunksProcessed,
+        namespace: namespace || '(default)',
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * Batch ingest multiple text documents
+ * Useful for ingesting app knowledge bases
+ */
+interface BatchIngestItem {
+  text: string;
+  source: string;
+  metadata?: Record<string, unknown>;
+}
+
+interface BatchIngestRequest {
+  documents: BatchIngestItem[];
+}
+
+app.post('/ingest/batch', apiKeyAuth({ required: true }), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const body = req.body as BatchIngestRequest;
+    const namespace = getTenantNamespace(req);
+
+    // Validate request
+    if (!body.documents || !Array.isArray(body.documents)) {
+      throw validationError('Request body must contain a "documents" array', { body: req.body });
+    }
+
+    if (body.documents.length === 0) {
+      throw validationError('Documents array cannot be empty', { body: req.body });
+    }
+
+    if (body.documents.length > 100) {
+      throw validationError('Maximum 100 documents per batch', { count: body.documents.length });
+    }
+
+    logger.info('Processing batch ingestion request', {
+      requestId: req.requestId,
+      tenantId: req.tenant?.id,
+      namespace,
+      documentCount: body.documents.length,
+    });
+
+    const results = [];
+    let successCount = 0;
+    let errorCount = 0;
+
+    for (const doc of body.documents) {
+      if (!doc.text || !doc.source) {
+        results.push({
+          source: doc.source || 'unknown',
+          success: false,
+          error: 'Missing text or source field',
+        });
+        errorCount++;
+        continue;
+      }
+
+      const result = await ingestText(doc.text, doc.source, namespace, doc.metadata || {});
+      results.push({
+        source: result.filePath,
+        chunksProcessed: result.chunksProcessed,
+        success: result.success,
+        error: result.error,
+      });
+
+      if (result.success) {
+        successCount++;
+      } else {
+        errorCount++;
+      }
+
+      // Small delay to avoid rate limiting
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    res.json({
+      requestId: req.requestId,
+      success: errorCount === 0,
+      data: {
+        total: body.documents.length,
+        successful: successCount,
+        failed: errorCount,
+        namespace: namespace || '(default)',
+        results,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * Delete all documents in a namespace
+ * Useful for re-indexing or cleanup
+ */
+app.delete('/ingest/namespace', apiKeyAuth({ required: true }), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const namespace = getTenantNamespace(req);
+    
+    if (!namespace) {
+      throw validationError('Cannot delete default namespace. Provide a tenant-specific namespace.', {});
+    }
+
+    logger.info('Processing namespace deletion request', {
+      requestId: req.requestId,
+      tenantId: req.tenant?.id,
+      namespace,
+    });
+
+    // Load config and delete namespace
+    const config = loadConfig();
+    const { Pinecone } = await import('@pinecone-database/pinecone');
+    const pinecone = new Pinecone({
+      apiKey: config.pineconeApiKey,
+    });
+
+    const index = pinecone.index(config.pineconeIndexName);
+    await index.namespace(namespace).deleteAll();
+
+    logger.info('Namespace deleted successfully', {
+      requestId: req.requestId,
+      namespace,
+    });
+
+    res.json({
+      requestId: req.requestId,
+      success: true,
+      data: {
+        namespace,
+        message: 'All documents in namespace deleted',
+      },
+    });
+  } catch (error) {
     next(error);
   }
 });

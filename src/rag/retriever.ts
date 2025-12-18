@@ -31,11 +31,13 @@ export interface RetrievedPassage {
  * 
  * @param query - The search query string
  * @param topK - Number of passages to retrieve (default: 5)
+ * @param namespace - Pinecone namespace for multi-tenant isolation (optional)
  * @returns Array of retrieved passages with scores and metadata
  */
 export async function retrieveRelevantPassages(
   query: string,
-  topK: number = 5
+  topK: number = 5,
+  namespace?: string
 ): Promise<RetrievedPassage[]> {
   const startTime = Date.now();
 
@@ -67,15 +69,19 @@ export async function retrieveRelevantPassages(
       vectorDimensions: queryEmbedding.length,
     });
 
-    // Query Pinecone
+    // Query Pinecone (with optional namespace for multi-tenancy)
     const index = pinecone.index(config.pineconeIndexName);
     
     logger.debug('Querying Pinecone', {
       indexName: config.pineconeIndexName,
+      namespace: namespace || '(default)',
       topK,
     });
 
-    const queryResponse = await index.query({
+    // Use namespace if provided (for tenant isolation)
+    const targetIndex = namespace ? index.namespace(namespace) : index;
+    
+    const queryResponse = await targetIndex.query({
       vector: queryEmbedding,
       topK,
       includeMetadata: true,
@@ -100,6 +106,7 @@ export async function retrieveRelevantPassages(
     logger.info('Retrieval completed', {
       queryLength: query.length,
       topK,
+      namespace: namespace || '(default)',
       resultsCount: passages.length,
       durationMs: duration,
     });

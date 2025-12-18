@@ -16,7 +16,7 @@
 
 import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
-import { join, extname, basename } from 'path';
+import { join, extname, basename, resolve, normalize, isAbsolute } from 'path';
 import { PDFParse } from 'pdf-parse';
 import { RecursiveCharacterTextSplitter } from '@langchain/classic/text_splitter';
 import { OpenAIEmbeddings } from '@langchain/openai';
@@ -26,6 +26,38 @@ import { loadConfig } from '../utils/config.js';
 
 // Type for pdf-parse buffer input
 type PDFBuffer = Buffer | Uint8Array;
+
+// Allowed base directories for file ingestion (security)
+const ALLOWED_BASE_DIRS = [
+  process.cwd(),
+  resolve(process.cwd(), 'uploads'),
+  resolve(process.cwd(), 'samples'),
+  // Allow paths specified via environment
+  ...(process.env.RAG_ALLOWED_PATHS?.split(',').map(p => resolve(p.trim())) || []),
+];
+
+/**
+ * Validate that a file path is safe to read (prevents path traversal)
+ * @throws Error if path is outside allowed directories
+ */
+function validateFilePath(filePath: string): string {
+  // Normalize and resolve to absolute path
+  const normalizedPath = normalize(filePath);
+  const absolutePath = isAbsolute(normalizedPath) 
+    ? normalizedPath 
+    : resolve(process.cwd(), normalizedPath);
+  
+  // Check if path is within any allowed directory
+  const isAllowed = ALLOWED_BASE_DIRS.some(baseDir => 
+    absolutePath.startsWith(baseDir + '/') || absolutePath === baseDir
+  );
+  
+  if (!isAllowed) {
+    throw new Error(`Access denied: File path "${filePath}" is outside allowed directories`);
+  }
+  
+  return absolutePath;
+}
 
 export interface DocumentChunk {
   text: string;
@@ -48,7 +80,8 @@ export interface IngestionResult {
  * Reads and parses a PDF file
  */
 async function parsePDF(filePath: string): Promise<string> {
-  const buffer = await readFile(filePath);
+  const safePath = validateFilePath(filePath);
+  const buffer = await readFile(safePath);
   const parser = new PDFParse({ data: buffer });
   const textResult = await parser.getText();
   return textResult.text;
@@ -58,7 +91,8 @@ async function parsePDF(filePath: string): Promise<string> {
  * Reads a Markdown file as plain text
  */
 async function parseMarkdown(filePath: string): Promise<string> {
-  const content = await readFile(filePath, 'utf-8');
+  const safePath = validateFilePath(filePath);
+  const content = await readFile(safePath, 'utf-8');
   return content;
 }
 
@@ -120,14 +154,18 @@ async function embedChunks(
 
 /**
  * Upserts embedded chunks into Pinecone index
+ * 
+ * @param namespace - Optional namespace for multi-tenant isolation
  */
 async function upsertToPinecone(
   chunks: DocumentChunk[],
   embeddings: number[][],
   indexName: string,
-  pinecone: Pinecone
+  pinecone: Pinecone,
+  namespace?: string
 ): Promise<void> {
-  const index = pinecone.index(indexName);
+  const baseIndex = pinecone.index(indexName);
+  const index = namespace ? baseIndex.namespace(namespace) : baseIndex;
 
   // Prepare vectors for upsert
   // Pinecone metadata must have string, number, boolean, or array values (no undefined)
@@ -164,14 +202,18 @@ async function upsertToPinecone(
 
 /**
  * Ingests a single document file
+ * 
+ * @param filePath - Path to the document
+ * @param namespace - Optional namespace for multi-tenant isolation
  */
-async function ingestDocument(filePath: string): Promise<IngestionResult> {
+async function ingestDocument(filePath: string, namespace?: string): Promise<IngestionResult> {
   const startTime = Date.now();
   const fileName = basename(filePath);
 
   try {
-    // Validate file exists
-    if (!existsSync(filePath)) {
+    // Validate file path is safe and exists
+    const safePath = validateFilePath(filePath);
+    if (!existsSync(safePath)) {
       throw new Error(`File not found: ${filePath}`);
     }
 
@@ -228,13 +270,14 @@ async function ingestDocument(filePath: string): Promise<IngestionResult> {
       vectorDimensions: embeddedVectors[0]?.length || 0,
     });
 
-    // Upsert to Pinecone
+    // Upsert to Pinecone (with optional namespace for multi-tenancy)
     logger.debug('Upserting to Pinecone', {
       filePath,
       indexName: config.pineconeIndexName,
+      namespace: namespace || '(default)',
       chunksCount: chunks.length,
     });
-    await upsertToPinecone(chunks, embeddedVectors, config.pineconeIndexName, pinecone);
+    await upsertToPinecone(chunks, embeddedVectors, config.pineconeIndexName, pinecone, namespace);
 
     const duration = Date.now() - startTime;
     logger.info('Document ingestion completed', {
@@ -270,16 +313,20 @@ async function ingestDocument(filePath: string): Promise<IngestionResult> {
 /**
  * Ingests multiple documents from file paths
  * Processes documents sequentially to avoid overwhelming the API
+ * 
+ * @param filePaths - Array of file paths to ingest
+ * @param namespace - Optional namespace for multi-tenant isolation
  */
-export async function ingestDocuments(filePaths: string[]): Promise<IngestionResult[]> {
+export async function ingestDocuments(filePaths: string[], namespace?: string): Promise<IngestionResult[]> {
   logger.info('Starting batch document ingestion', {
     documentCount: filePaths.length,
+    namespace: namespace || '(default)',
   });
 
   const results: IngestionResult[] = [];
 
   for (const filePath of filePaths) {
-    const result = await ingestDocument(filePath);
+    const result = await ingestDocument(filePath, namespace);
     results.push(result);
 
     // Small delay between documents to avoid rate limiting
@@ -295,7 +342,109 @@ export async function ingestDocuments(filePaths: string[]): Promise<IngestionRes
     total: results.length,
     successful,
     failed,
+    namespace: namespace || '(default)',
   });
 
   return results;
+}
+
+/**
+ * Ingests raw text content (for API ingestion without file upload)
+ * 
+ * @param text - The text content to ingest
+ * @param source - Source identifier (e.g., "api:doc-123", "easyflow:workflow-help")
+ * @param namespace - Optional namespace for multi-tenant isolation
+ * @param metadata - Additional metadata to store with chunks
+ */
+export async function ingestText(
+  text: string,
+  source: string,
+  namespace?: string,
+  metadata: Record<string, unknown> = {}
+): Promise<IngestionResult> {
+  const startTime = Date.now();
+
+  try {
+    if (!text || text.trim().length === 0) {
+      throw new Error('Text content is empty');
+    }
+
+    logger.info('Starting text ingestion', {
+      source,
+      textLength: text.length,
+      namespace: namespace || '(default)',
+    });
+
+    // Load config
+    const config = loadConfig();
+
+    // Initialize embeddings
+    const embeddings = new OpenAIEmbeddings({
+      openAIApiKey: config.openaiApiKey,
+    });
+
+    // Initialize Pinecone
+    const pinecone = new Pinecone({
+      apiKey: config.pineconeApiKey,
+      ...(config.pineconeEnvironment && { environment: config.pineconeEnvironment }),
+    });
+
+    // Chunk text
+    const chunks = await chunkText(text, source);
+    
+    // Add custom metadata to each chunk
+    const enrichedChunks = chunks.map(chunk => ({
+      ...chunk,
+      metadata: {
+        ...chunk.metadata,
+        ...metadata,
+      },
+    }));
+
+    logger.info('Text chunked', {
+      source,
+      chunksCount: enrichedChunks.length,
+    });
+
+    // Embed chunks
+    const embeddedVectors = await embedChunks(enrichedChunks, embeddings);
+
+    logger.info('Embeddings generated', {
+      source,
+      vectorDimensions: embeddedVectors[0]?.length || 0,
+    });
+
+    // Upsert to Pinecone
+    await upsertToPinecone(enrichedChunks, embeddedVectors, config.pineconeIndexName, pinecone, namespace);
+
+    const duration = Date.now() - startTime;
+    logger.info('Text ingestion completed', {
+      source,
+      chunksProcessed: enrichedChunks.length,
+      namespace: namespace || '(default)',
+      durationMs: duration,
+    });
+
+    return {
+      filePath: source,
+      chunksProcessed: enrichedChunks.length,
+      success: true,
+    };
+  } catch (error) {
+    const duration = Date.now() - startTime;
+    const errorMessage = error instanceof Error ? error.message : String(error);
+
+    logger.error('Text ingestion failed', {
+      source,
+      error: errorMessage,
+      durationMs: duration,
+    });
+
+    return {
+      filePath: source,
+      chunksProcessed: 0,
+      success: false,
+      error: errorMessage,
+    };
+  }
 }

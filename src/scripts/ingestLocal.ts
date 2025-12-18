@@ -6,12 +6,45 @@
  * Or: ts-node-dev src/scripts/ingestLocal.ts file1.pdf file2.md
  */
 
+import { resolve, normalize, isAbsolute } from 'path';
 import { ingestDocuments } from '../rag/ingest.js';
 import { logger } from '../utils/logger.js';
 
+/**
+ * Sanitize file path to prevent path traversal attacks
+ */
+function sanitizePath(inputPath: string): string {
+  // Normalize the path to resolve .. and . segments
+  const normalized = normalize(inputPath);
+  
+  // Convert to absolute path from current working directory
+  const absolutePath = isAbsolute(normalized) 
+    ? normalized 
+    : resolve(process.cwd(), normalized);
+  
+  // Ensure the path doesn't escape the current directory or allowed directories
+  const allowedBase = process.cwd();
+  if (!absolutePath.startsWith(allowedBase)) {
+    throw new Error(`Path traversal detected: ${inputPath} resolves outside allowed directory`);
+  }
+  
+  return absolutePath;
+}
+
 async function main() {
   // Get file paths from command line arguments
-  const filePaths = process.argv.slice(2);
+  const rawPaths = process.argv.slice(2);
+  
+  // Sanitize all paths to prevent path traversal
+  let filePaths: string[];
+  try {
+    filePaths = rawPaths.map(sanitizePath);
+  } catch (error) {
+    logger.error('Invalid file path', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    process.exit(1);
+  }
 
   if (filePaths.length === 0) {
     logger.error('No file paths provided', {

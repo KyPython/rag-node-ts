@@ -36,7 +36,8 @@ export interface AnswerResult {
 
 // Configuration constants
 const DEFAULT_TEMPERATURE = 0.7;
-const DEFAULT_MODEL = 'gpt-4o-mini';
+// Model can be configured via OPENAI_MODEL env var (e.g., 'gpt-4-turbo', 'gpt-4o', 'gpt-4o-mini')
+const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
 /**
  * Constructs the system prompt for RAG answer generation
