@@ -18,10 +18,11 @@
  * - Enable users to verify claims by viewing original passages
  */
 
-import { ChatOpenAI } from '@langchain/openai';
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 import { logger } from '../utils/logger.js';
 import { loadConfig } from '../utils/config.js';
+import { createLLMClient } from '../utils/factory.js';
+import { recordLLMTrace } from './langsmith.js';
 
 export interface Context {
   text: string;
@@ -109,7 +110,8 @@ export async function generateAnswer(
   query: string,
   contexts: Context[],
   temperature: number = DEFAULT_TEMPERATURE,
-  model: string = DEFAULT_MODEL
+  model: string = DEFAULT_MODEL,
+  requestId?: string
 ): Promise<AnswerResult> {
   const startTime = Date.now();
 
@@ -133,12 +135,8 @@ export async function generateAnswer(
     // Load configuration
     const config = loadConfig();
 
-    // Initialize OpenAI chat model
-    const llm = new ChatOpenAI({
-      openAIApiKey: config.openaiApiKey,
-      modelName: model,
-      temperature,
-    });
+    // Initialize LLM via factory (OpenAI/Azure)
+    const llm = createLLMClient(config, model, temperature);
 
     // Build prompts
     const systemPrompt = buildSystemPrompt();
@@ -173,10 +171,16 @@ export async function generateAnswer(
       durationMs: duration,
     });
 
-    return {
-      answer,
-      citations,
-    };
+    // Observability: record LLM token usage via LangSmith stub
+    try {
+      const promptTokens = Math.ceil(contexts.reduce((s, c) => s + (c.text?.length || 0), 0) / 4);
+      const completionTokens = Math.ceil(answer.length / 4);
+      recordLLMTrace(requestId, promptTokens, completionTokens, model, 0 /* cost placeholder */);
+    } catch (err) {
+      logger.warn('Failed to record LLM trace', { requestId });
+    }
+
+    return { answer, citations };
   } catch (error) {
     const duration = Date.now() - startTime;
     const errorMessage = error instanceof Error ? error.message : String(error);

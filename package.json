@@ -10,7 +10,9 @@
     "ingest": "ts-node-dev src/scripts/ingestLocal.ts",
     "setup-pinecone": "ts-node-dev src/scripts/setupPinecone.ts",
     "bench": "ts-node-dev src/benchmark/benchmark.ts",
+    "judge": "ts-node-dev src/benchmark/judge.ts",
     "demo": "npm run dev",
+    "compose:up": "docker-compose up -d",
     "demo-setup": "bash scripts/demo-setup.sh",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
@@ -32,6 +34,7 @@
     "openai": "^6.10.0",
     "pdf-parse": "^2.4.5",
     "prom-client": "^15.1.3"
+    ,"pino": "^8.16.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",

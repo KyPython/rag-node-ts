@@ -16,9 +16,10 @@
  */
 
 import { OpenAIEmbeddings } from '@langchain/openai';
-import { Pinecone } from '@pinecone-database/pinecone';
 import { logger } from '../utils/logger.js';
 import { loadConfig } from '../utils/config.js';
+import { createVectorClient } from '../utils/factory.js';
+import { recordRetrievalTrace } from '../llm/langsmith.js';
 
 export interface RetrievedPassage {
   text: string;
@@ -37,7 +38,8 @@ export interface RetrievedPassage {
 export async function retrieveRelevantPassages(
   query: string,
   topK: number = 5,
-  namespace?: string
+  namespace?: string,
+  requestId?: string
 ): Promise<RetrievedPassage[]> {
   const startTime = Date.now();
 
@@ -55,11 +57,8 @@ export async function retrieveRelevantPassages(
       openAIApiKey: config.openaiApiKey,
     });
 
-    // Initialize Pinecone
-    const pinecone = new Pinecone({
-      apiKey: config.pineconeApiKey,
-      ...(config.pineconeEnvironment && { environment: config.pineconeEnvironment }),
-    });
+    // Initialize vector client via factory (pinecone/chroma/azure)
+    const vectorClient = createVectorClient(config);
 
     // Embed the query
     logger.debug('Embedding query', { queryLength: query.length });
@@ -70,17 +69,19 @@ export async function retrieveRelevantPassages(
     });
 
     // Query Pinecone (with optional namespace for multi-tenancy)
-    const index = pinecone.index(config.pineconeIndexName);
-    
-    logger.debug('Querying Pinecone', {
+    // Use Pinecone-compatible index API from factory
+    const index = vectorClient.index(config.pineconeIndexName);
+
+    logger.debug('Querying vector index', {
       indexName: config.pineconeIndexName,
       namespace: namespace || '(default)',
       topK,
+      backend: process.env.VECTOR_BACKEND || 'pinecone',
     });
 
     // Use namespace if provided (for tenant isolation)
     const targetIndex = namespace ? index.namespace(namespace) : index;
-    
+
     const queryResponse = await targetIndex.query({
       vector: queryEmbedding,
       topK,
@@ -88,7 +89,7 @@ export async function retrieveRelevantPassages(
     });
 
     // Format results
-    const passages: RetrievedPassage[] = (queryResponse.matches || []).map((match) => {
+    const passages: RetrievedPassage[] = (queryResponse.matches || []).map((match: any) => {
       // Extract text from metadata or use id as fallback
       const text = (match.metadata?.text as string) || match.id || '';
       
@@ -110,6 +111,13 @@ export async function retrieveRelevantPassages(
       resultsCount: passages.length,
       durationMs: duration,
     });
+
+    // Record tracing information (LangSmith stub)
+    try {
+      recordRetrievalTrace(requestId, query, passages.length, 0 /* cost placeholder */);
+    } catch (err) {
+      logger.warn('Failed to record retrieval trace', { requestId });
+    }
 
     return passages;
   } catch (error) {

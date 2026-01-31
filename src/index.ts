@@ -16,9 +16,11 @@ import multer from 'multer';
 import { retrieveRelevantPassages, type RetrievedPassage } from './rag/retriever.js';
 import { ingestText, ingestDocuments } from './rag/ingest.js';
 import { generateAnswer, type Context } from './llm/answer.js';
+import { recordRetrievalTrace, recordLLMTrace } from './llm/langsmith.js';
 import { logger } from './utils/logger.js';
 import { loadConfig } from './utils/config.js';
 import { requestIdMiddleware } from './middleware/requestId.js';
+import { moderationMiddleware } from './middleware/moderation.js';
 import { apiKeyAuth, getTenantNamespace } from './middleware/apiKeyAuth.js';
 import { rateLimiter } from './middleware/rateLimiter.js';
 import { errorHandler, AppError, validationError } from './middleware/errorHandler.js';
@@ -68,6 +70,9 @@ app.use(express.static('public'));
 
 // 1. Request ID middleware - must be first to attach requestId to all requests
 app.use(requestIdMiddleware);
+
+// 1.5 Moderation gateway - block non-legal intent and adversarial queries early
+app.use(moderationMiddleware);
 
 // 2. Metrics middleware - record metrics for all requests
 app.use(metricsMiddleware);
@@ -252,7 +257,7 @@ app.post('/query', apiKeyAuth({ required: false }), rateLimiter(), async (req: R
     // Step 1: Retrieve relevant passages (with tenant namespace for multi-tenancy)
     const namespace = getTenantNamespace(req);
     retrievalStartTime = Date.now();
-    const retrievedPassages = await retrieveRelevantPassages(body.query, topK, namespace);
+    const retrievedPassages = await retrieveRelevantPassages(body.query, topK, namespace, req.requestId);
     retrievalDuration = Date.now() - retrievalStartTime;
 
     logger.info('Retrieval completed', {
@@ -261,6 +266,13 @@ app.post('/query', apiKeyAuth({ required: false }), rateLimiter(), async (req: R
       passagesCount: retrievedPassages.length,
       retrievalDurationMs: retrievalDuration,
     });
+
+    // Observability: lightweight LangSmith trace for retrieval
+    try {
+      recordRetrievalTrace(req.requestId, body.query, retrievedPassages.length, 0 /* cost placeholder */);
+    } catch (err) {
+      logger.warn('Failed to record retrieval trace', { requestId: req.requestId });
+    }
 
     // Step 2: If retrieval-only mode, return early
     if (mode === 'retrieval') {
@@ -319,8 +331,17 @@ app.post('/query', apiKeyAuth({ required: false }), rateLimiter(), async (req: R
       text: truncatedTexts[index] || ctx.text,
     }));
 
-    const answerResult = await generateAnswer(body.query, contexts);
+    const answerResult = await generateAnswer(body.query, contexts, undefined, undefined, req.requestId);
     answerDuration = Date.now() - answerStartTime;
+
+    // Observability: record LLM usage (tokens estimated crudely)
+    try {
+      const promptTokens = Math.ceil(contexts.reduce((s, c) => s + (c.text?.length || 0), 0) / 4);
+      const completionTokens = Math.ceil(answerResult.answer.length / 4);
+      recordLLMTrace(req.requestId, promptTokens, completionTokens, process.env.OPENAI_MODEL || 'unknown', 0 /* cost placeholder */);
+    } catch (err) {
+      logger.warn('Failed to record LLM trace', { requestId: req.requestId });
+    }
 
     // Step 4: Build citations array from answer result
     const citations = answerResult.citations.map((index) => ({

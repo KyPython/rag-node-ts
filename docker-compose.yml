@@ -76,6 +76,29 @@ services:
       timeout: 5s
       retries: 3
 
+  # Chroma vector database for local development
+  chroma:
+    image: ghcr.io/chroma-core/chroma:latest
+    ports:
+      - "8000:8000"
+    environment:
+      - CHROMA_SERVER_ALLOW_EMPTY_PASSWORD=true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8000/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+
+  # Simple static UI that serves files from ./public for demo purposes
+  ui:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./public:/usr/share/nginx/html:ro
+    restart: unless-stopped
+
 # ============================================================================
 # Volumes
 # ============================================================================

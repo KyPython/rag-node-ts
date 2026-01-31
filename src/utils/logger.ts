@@ -1,41 +1,21 @@
-/**
- * Simple structured JSON logger
- * Logs JSON lines with timestamp, level, message, and optional metadata
- */
+import pino from 'pino';
 
-export type LogLevel = 'info' | 'error' | 'warn' | 'debug';
+const pinoFactory = (pino as any).default || pino;
 
-export interface LogEntry {
-  timestamp: string;
-  level: LogLevel;
-  message: string;
-  meta?: Record<string, unknown>;
-}
+const baseLogger = pinoFactory({
+  level: process.env.LOG_LEVEL || 'info',
+  timestamp: pino.stdTimeFunctions.isoTime,
+  transport: {
+    target: 'pino-pretty',
+    options: { colorize: false, singleLine: true },
+  },
+});
 
-/**
- * Logs a structured JSON entry to stdout/stderr
- * Automatically includes requestId from meta if present
- */
-function log(level: LogLevel, message: string, meta?: Record<string, unknown>): void {
-  const entry: LogEntry = {
-    timestamp: new Date().toISOString(),
-    level,
-    message,
-    ...(meta && { meta }),
-  };
-
-  const output = JSON.stringify(entry);
-  const stream = level === 'error' ? process.stderr : process.stdout;
-  stream.write(output + '\n');
-}
-
-/**
- * Helper to create log metadata with requestId
- */
+// Keep a thin wrapper so existing call sites don't need to change
 export const logger = {
-  info: (message: string, meta?: Record<string, unknown>) => log('info', message, meta),
-  error: (message: string, meta?: Record<string, unknown>) => log('error', message, meta),
-  warn: (message: string, meta?: Record<string, unknown>) => log('warn', message, meta),
-  debug: (message: string, meta?: Record<string, unknown>) => log('debug', message, meta),
+  info: (message: string, meta?: Record<string, unknown>) => baseLogger.info(meta || {}, message),
+  error: (message: string, meta?: Record<string, unknown>) => baseLogger.error(meta || {}, message),
+  warn: (message: string, meta?: Record<string, unknown>) => baseLogger.warn(meta || {}, message),
+  debug: (message: string, meta?: Record<string, unknown>) => baseLogger.debug(meta || {}, message),
 };
 
