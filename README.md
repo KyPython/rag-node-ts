@@ -380,6 +380,40 @@ See deployment-specific setup in the respective platform documentation.
 
 ## License
 
+## Chunking experiments
+
+A small set of utilities and environment flags are available to run and evaluate text chunking locally without calling external providers.
+
+- `CHUNK_ONLY=true` — set this environment variable when running ingestion to skip embeddings and Pinecone upserts. This lets you inspect generated chunks locally and iterate on `chunkSize`/`chunkOverlap` without API calls.
+- `src/rag/ingest.ts` — default chunking has been adjusted to `chunkSize=500` and `chunkOverlap=100` (OptionA). Change these values in the file or pass them into the chunking helper when experimenting.
+- `src/scripts/sweepChunking.ts` — compares multiple chunking configs (OptionA/Original/OptionB) and reports target chunk rank and precision@K for a sample query.
+
+How to run the sweep (compiled version):
+
+```bash
+# build first (if not built)
+npm run build
+
+# run sweep in CHUNK_ONLY mode (no OpenAI/Pinecone required)
+CHUNK_ONLY=true node dist/scripts/sweepChunking.js
+```
+
+How to run a single CHUNK_ONLY ingest locally:
+
+```bash
+# build first
+npm run build
+
+# ingest files, create chunks, but do not call external APIs
+CHUNK_ONLY=true node dist/scripts/ingestLocal.js samples/gdpr-data-protection.md
+```
+
+Notes:
+- A best-effort token counter is available at `src/utils/tokenCounter.ts` and is used in logs to record `promptTokens` and `completionTokens` for observability.
+- Once you are satisfied with chunking locally, remove `CHUNK_ONLY` and ensure `OPENAI_API_KEY` and `PINECONE_API_KEY` are set to perform full ingestion (embeddings + upserts).
+
+## License
+
 ISC
 
 ## Contributing
