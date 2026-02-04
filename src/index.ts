@@ -398,18 +398,18 @@ app.post('/query', apiKeyAuth({ required: false }), rateLimiter(), async (req: R
       cacheHit: false,
     });
 
-    // Track usage for billing
+    // Track usage for billing (pass request-scoped logger for correlated usage logs)
     trackUsage({
       tenantId: req.tenant?.id || 'anonymous',
       timestamp: new Date(),
       endpoint: '/query',
       requestId: req.requestId || 'unknown',
-      embeddingTokens: Math.ceil(body.query.length / 4), // still a rough estimate for embedding tokens
+      embeddingTokens: Math.ceil(body.query.length / 4),
       llmPromptTokens: promptTokens,
       llmCompletionTokens: completionTokens,
       durationMs: totalDuration,
       chunksRetrieved: retrievedPassages.length,
-    });
+    }, log);
 
     // Cache the response if cache is enabled
     if (cacheEnabled) {

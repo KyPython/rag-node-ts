@@ -11,11 +11,12 @@ import { logger } from './logger.js';
 export type VectorClient = any;
 export type LLMClient = any;
 
-export function createVectorClient(config?: RAGConfig): VectorClient {
+export function createVectorClient(config?: RAGConfig, reqLogger?: any): VectorClient {
+  const log = reqLogger || logger;
   const cfg = config || loadConfig();
   const backend = process.env.VECTOR_BACKEND || 'pinecone';
 
-  logger.info('Factory: creating vector client', { backend });
+  log.info('Factory: creating vector client', { backend });
 
   if (backend === 'pinecone') {
     return new Pinecone({
@@ -37,11 +38,12 @@ export function createVectorClient(config?: RAGConfig): VectorClient {
   throw new Error(`Unknown vector backend: ${backend}`);
 }
 
-export function createLLMClient(config?: RAGConfig, model?: string, temperature?: number): LLMClient {
+export function createLLMClient(config?: RAGConfig, model?: string, temperature?: number, reqLogger?: any): LLMClient {
+  const log = reqLogger || logger;
   const cfg = config || loadConfig();
   const backend = process.env.LLM_BACKEND || 'openai';
 
-  logger.info('Factory: creating LLM client', { backend, model });
+  log.info('Factory: creating LLM client', { backend, model });
 
   if (backend === 'openai') {
     return new ChatOpenAI({

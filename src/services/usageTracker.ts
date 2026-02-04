@@ -72,7 +72,7 @@ const MAX_RECORDS = 10000; // Keep last 10K records in memory
 /**
  * Record a usage event
  */
-export function trackUsage(record: UsageRecord): void {
+export function trackUsage(record: UsageRecord, reqLogger?: any): void {
   // Calculate cost
   let costMillicents = 0;
   
@@ -103,7 +103,8 @@ export function trackUsage(record: UsageRecord): void {
   }
   
   // Log for observability
-  logger.info('Usage tracked', {
+  const log = reqLogger || logger;
+  log.info('Usage tracked', {
     tenantId: record.tenantId,
     endpoint: record.endpoint,
     requestId: record.requestId,

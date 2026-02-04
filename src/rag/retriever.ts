@@ -60,7 +60,7 @@ export async function retrieveRelevantPassages(
     });
 
     // Initialize vector client via factory (pinecone/chroma/azure)
-    const vectorClient = createVectorClient(config);
+    const vectorClient = createVectorClient(config, log);
 
     // Embed the query
     log.debug('Embedding query', { queryLength: query.length });

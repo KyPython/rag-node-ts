@@ -141,7 +141,7 @@ export async function generateAnswer(
     const config = loadConfig();
 
     // Initialize LLM via factory (OpenAI/Azure)
-    const llm = createLLMClient(config, model, temperature);
+    const llm = createLLMClient(config, model, temperature, log);
 
     // Build prompts (allow overrides from caller)
     const systemPrompt = systemPromptOverride ?? buildSystemPrompt();
