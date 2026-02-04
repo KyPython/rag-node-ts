@@ -19,6 +19,7 @@ import { generateAnswer, type Context } from './llm/answer.js';
 import { recordRetrievalTrace, recordLLMTrace } from './llm/langsmith.js';
 import { logger } from './utils/logger.js';
 import { loadConfig } from './utils/config.js';
+import { countTokens } from './utils/tokenCounter.js';
 import { requestIdMiddleware } from './middleware/requestId.js';
 import { moderationMiddleware } from './middleware/moderation.js';
 import { apiKeyAuth, getTenantNamespace } from './middleware/apiKeyAuth.js';
@@ -182,6 +183,7 @@ interface AnswerResponse {
 // Apply API key auth and rate limiting to query endpoint
 app.post('/query', apiKeyAuth({ required: false }), rateLimiter(), async (req: Request, res: Response, next: NextFunction) => {
   const requestStartTime = Date.now();
+  const log = (req as any).log || logger;
   let retrievalStartTime: number;
   let retrievalDuration: number;
   let answerStartTime: number;
@@ -220,7 +222,7 @@ app.post('/query', apiKeyAuth({ required: false }), rateLimiter(), async (req: R
         cacheHit = true;
         const totalDuration = Date.now() - requestStartTime;
         
-        logger.info('Query served from cache', {
+        log.info('Query served from cache', {
           requestId: req.requestId,
           query: body.query,
           mode,
@@ -237,7 +239,7 @@ app.post('/query', apiKeyAuth({ required: false }), rateLimiter(), async (req: R
       }
     }
 
-    logger.info('Processing query request (cache miss)', {
+    log.info('Processing query request (cache miss)', {
       requestId: req.requestId,
       query: body.query,
       queryLength: body.query.length,
@@ -246,7 +248,7 @@ app.post('/query', apiKeyAuth({ required: false }), rateLimiter(), async (req: R
       cacheEnabled,
     });
 
-    logger.info('Processing query request', {
+    log.info('Processing query request', {
       requestId: req.requestId,
       query: body.query,
       queryLength: body.query.length,
@@ -260,7 +262,7 @@ app.post('/query', apiKeyAuth({ required: false }), rateLimiter(), async (req: R
     const retrievedPassages = await retrieveRelevantPassages(body.query, topK, namespace, req.requestId);
     retrievalDuration = Date.now() - retrievalStartTime;
 
-    logger.info('Retrieval completed', {
+    log.info('Retrieval completed', {
       requestId: req.requestId,
       query: body.query,
       passagesCount: retrievedPassages.length,
@@ -271,7 +273,7 @@ app.post('/query', apiKeyAuth({ required: false }), rateLimiter(), async (req: R
     try {
       recordRetrievalTrace(req.requestId, body.query, retrievedPassages.length, 0 /* cost placeholder */);
     } catch (err) {
-      logger.warn('Failed to record retrieval trace', { requestId: req.requestId });
+      log.warn('Failed to record retrieval trace', { requestId: req.requestId });
     }
 
     // Step 2: If retrieval-only mode, return early
@@ -285,7 +287,7 @@ app.post('/query', apiKeyAuth({ required: false }), rateLimiter(), async (req: R
       };
 
       const totalDuration = Date.now() - requestStartTime;
-      logger.info('Query completed (retrieval-only mode)', {
+      log.info('Query completed (retrieval-only mode)', {
         requestId: req.requestId,
         query: body.query,
         passagesCount: retrievedPassages.length,
@@ -299,7 +301,7 @@ app.post('/query', apiKeyAuth({ required: false }), rateLimiter(), async (req: R
         const responseToCache = JSON.stringify(response.data);
         
         await cache.set(cacheKey, responseToCache, CACHE_TTL_SECONDS).catch((err) => {
-          logger.warn('Failed to cache response', {
+          log.warn('Failed to cache response', {
             requestId: req.requestId,
             error: err instanceof Error ? err.message : String(err),
           });
@@ -334,13 +336,27 @@ app.post('/query', apiKeyAuth({ required: false }), rateLimiter(), async (req: R
     const answerResult = await generateAnswer(body.query, contexts, undefined, undefined, req.requestId);
     answerDuration = Date.now() - answerStartTime;
 
-    // Observability: record LLM usage (tokens estimated crudely)
+    // Observability: record LLM usage (attempt accurate token counts)
+    let promptTokens = 0;
+    let completionTokens = 0;
+    let totalTokens = 0;
     try {
-      const promptTokens = Math.ceil(contexts.reduce((s, c) => s + (c.text?.length || 0), 0) / 4);
-      const completionTokens = Math.ceil(answerResult.answer.length / 4);
+      const promptText = contexts.map((c) => c.text).join('\n\n') + '\n' + body.query;
+      promptTokens = await countTokens(promptText, process.env.OPENAI_MODEL);
+      completionTokens = await countTokens(answerResult.answer, process.env.OPENAI_MODEL);
+      totalTokens = promptTokens + completionTokens;
+
+      log.info('LLM token usage for query', {
+        requestId: req.requestId,
+        promptTokens,
+        completionTokens,
+        totalTokens,
+        model: process.env.OPENAI_MODEL || 'unknown',
+      });
+
       recordLLMTrace(req.requestId, promptTokens, completionTokens, process.env.OPENAI_MODEL || 'unknown', 0 /* cost placeholder */);
     } catch (err) {
-      logger.warn('Failed to record LLM trace', { requestId: req.requestId });
+      log.warn('Failed to record LLM trace', { requestId: req.requestId });
     }
 
     // Step 4: Build citations array from answer result
@@ -361,7 +377,7 @@ app.post('/query', apiKeyAuth({ required: false }), rateLimiter(), async (req: R
     };
 
     const totalDuration = Date.now() - requestStartTime;
-    logger.info('Query completed (full RAG mode)', {
+    log.info('Query completed (full RAG mode)', {
       requestId: req.requestId,
       query: body.query,
       passagesRetrieved: retrievedPassages.length,
@@ -370,6 +386,10 @@ app.post('/query', apiKeyAuth({ required: false }), rateLimiter(), async (req: R
       retrievalDurationMs: retrievalDuration,
       answerGenerationDurationMs: answerDuration,
       totalDurationMs: totalDuration,
+      promptTokens,
+      completionTokens,
+      tokenCount: totalTokens,
+      topK,
       cacheHit: false,
     });
 
@@ -379,9 +399,9 @@ app.post('/query', apiKeyAuth({ required: false }), rateLimiter(), async (req: R
       timestamp: new Date(),
       endpoint: '/query',
       requestId: req.requestId || 'unknown',
-      embeddingTokens: Math.ceil(body.query.length / 4), // Rough estimate
-      llmPromptTokens: Math.ceil(contexts.reduce((sum, c) => sum + c.text.length, 0) / 4),
-      llmCompletionTokens: Math.ceil(answerResult.answer.length / 4),
+      embeddingTokens: Math.ceil(body.query.length / 4), // still a rough estimate for embedding tokens
+      llmPromptTokens: promptTokens,
+      llmCompletionTokens: completionTokens,
       durationMs: totalDuration,
       chunksRetrieved: retrievedPassages.length,
     });
@@ -393,7 +413,7 @@ app.post('/query', apiKeyAuth({ required: false }), rateLimiter(), async (req: R
       
       await cache.set(cacheKey, responseToCache, CACHE_TTL_SECONDS).catch((err) => {
         // Log but don't fail the request if caching fails
-        logger.warn('Failed to cache response', {
+        log.warn('Failed to cache response', {
           requestId: req.requestId,
           error: err instanceof Error ? err.message : String(err),
         });
@@ -423,6 +443,7 @@ interface IngestTextRequest {
 
 app.post('/ingest/text', apiKeyAuth({ required: true }), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const log = (req as any).log || logger;
     const body = req.body as IngestTextRequest;
     const namespace = getTenantNamespace(req);
 
@@ -435,7 +456,7 @@ app.post('/ingest/text', apiKeyAuth({ required: true }), async (req: Request, re
       throw validationError('Request body must contain a "source" field of type string', { body: req.body });
     }
 
-    logger.info('Processing text ingestion request', {
+    log.info('Processing text ingestion request', {
       requestId: req.requestId,
       tenantId: req.tenant?.id,
       namespace,
@@ -483,6 +504,7 @@ interface BatchIngestRequest {
 
 app.post('/ingest/batch', apiKeyAuth({ required: true }), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const log = (req as any).log || logger;
     const body = req.body as BatchIngestRequest;
     const namespace = getTenantNamespace(req);
 
@@ -499,7 +521,7 @@ app.post('/ingest/batch', apiKeyAuth({ required: true }), async (req: Request, r
       throw validationError('Maximum 100 documents per batch', { count: body.documents.length });
     }
 
-    logger.info('Processing batch ingestion request', {
+    log.info('Processing batch ingestion request', {
       requestId: req.requestId,
       tenantId: req.tenant?.id,
       namespace,
@@ -561,13 +583,14 @@ app.post('/ingest/batch', apiKeyAuth({ required: true }), async (req: Request, r
  */
 app.delete('/ingest/namespace', apiKeyAuth({ required: true }), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const log = (req as any).log || logger;
     const namespace = getTenantNamespace(req);
     
     if (!namespace) {
       throw validationError('Cannot delete default namespace. Provide a tenant-specific namespace.', {});
     }
 
-    logger.info('Processing namespace deletion request', {
+    log.info('Processing namespace deletion request', {
       requestId: req.requestId,
       tenantId: req.tenant?.id,
       namespace,
@@ -583,7 +606,7 @@ app.delete('/ingest/namespace', apiKeyAuth({ required: true }), async (req: Requ
     const index = pinecone.index(config.pineconeIndexName);
     await index.namespace(namespace).deleteAll();
 
-    logger.info('Namespace deleted successfully', {
+    log.info('Namespace deleted successfully', {
       requestId: req.requestId,
       namespace,
     });
