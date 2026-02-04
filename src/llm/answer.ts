@@ -113,7 +113,9 @@ export async function generateAnswer(
   temperature: number = DEFAULT_TEMPERATURE,
   model: string = DEFAULT_MODEL,
   requestId?: string,
-  reqLogger?: any
+  reqLogger?: any,
+  systemPromptOverride?: string,
+  userPromptOverride?: string,
 ): Promise<AnswerResult> {
   const startTime = Date.now();
   const log = reqLogger || logger;
@@ -141,9 +143,9 @@ export async function generateAnswer(
     // Initialize LLM via factory (OpenAI/Azure)
     const llm = createLLMClient(config, model, temperature);
 
-    // Build prompts
-    const systemPrompt = buildSystemPrompt();
-    const userPrompt = buildUserPrompt(query, contexts);
+    // Build prompts (allow overrides from caller)
+    const systemPrompt = systemPromptOverride ?? buildSystemPrompt();
+    const userPrompt = userPromptOverride ?? buildUserPrompt(query, contexts);
 
     log.debug('Generated prompts', {
       systemPromptLength: systemPrompt.length,

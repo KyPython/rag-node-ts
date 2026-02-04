@@ -16,6 +16,7 @@ import multer from 'multer';
 import { retrieveRelevantPassages, type RetrievedPassage } from './rag/retriever.js';
 import { ingestText, ingestDocuments } from './rag/ingest.js';
 import { generateAnswer, type Context } from './llm/answer.js';
+import { renderRagPrompts } from './utils/promptLoader.js';
 import { recordRetrievalTrace, recordLLMTrace } from './llm/langsmith.js';
 import { logger } from './utils/logger.js';
 import { loadConfig } from './utils/config.js';
@@ -333,7 +334,11 @@ app.post('/query', apiKeyAuth({ required: false }), rateLimiter(), async (req: R
       text: truncatedTexts[index] || ctx.text,
     }));
 
-    const answerResult = await generateAnswer(body.query, contexts, undefined, undefined, req.requestId, log);
+    // Render production RAG prompt template (system + developer -> systemPrompt, user -> userPrompt)
+    const contextSections = contexts.map((ctx, idx) => `[p${idx}]: ${ctx.text}`);
+    const { systemPrompt, userPrompt } = await renderRagPrompts(contextSections, body.query);
+
+    const answerResult = await generateAnswer(body.query, contexts, undefined, undefined, req.requestId, log, systemPrompt, userPrompt);
     answerDuration = Date.now() - answerStartTime;
 
     // Observability: record LLM usage (attempt accurate token counts)
