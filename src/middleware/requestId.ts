@@ -11,6 +11,7 @@
 
 import { randomUUID } from 'crypto';
 import { type Request, type Response, type NextFunction } from 'express';
+import { logger } from '../utils/logger.js';
 
 // Extend Express Request type to include requestId
 declare global {
@@ -37,6 +38,16 @@ export function requestIdMiddleware(
 
   // Add X-Request-Id header to response for client-side tracing
   res.setHeader('X-Request-Id', requestId);
+
+  // Attach a child logger scoped to this request so all logs can include requestId
+  try {
+    // @ts-expect-error - add typed property dynamically
+    req.log = logger.child({ requestId });
+  } catch (e) {
+    // fallback: attach base logger
+    // @ts-expect-error
+    req.log = (logger as any);
+  }
 
   next();
 }
