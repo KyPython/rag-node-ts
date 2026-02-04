@@ -24,6 +24,10 @@ import { Pinecone } from '@pinecone-database/pinecone';
 import { logger } from '../utils/logger.js';
 import { loadConfig } from '../utils/config.js';
 
+// When set to "true", ingest pipeline will stop after chunking and skip
+// embedding generation + vector upserts. Useful for offline chunking experiments.
+const CHUNK_ONLY = process.env.CHUNK_ONLY === 'true';
+
 // Type for pdf-parse buffer input
 type PDFBuffer = Buffer | Uint8Array;
 
@@ -118,8 +122,8 @@ async function parseDocument(filePath: string): Promise<string> {
 async function chunkText(
   text: string,
   source: string,
-  chunkSize: number = 1000,
-  chunkOverlap: number = 200
+  chunkSize: number = 500,
+  chunkOverlap: number = 100
 ): Promise<DocumentChunk[]> {
   const splitter = new RecursiveCharacterTextSplitter({
     chunkSize,
@@ -206,9 +210,10 @@ async function upsertToPinecone(
  * @param filePath - Path to the document
  * @param namespace - Optional namespace for multi-tenant isolation
  */
-async function ingestDocument(filePath: string, namespace?: string): Promise<IngestionResult> {
+async function ingestDocument(filePath: string, namespace?: string, requestId?: string, reqLogger?: any): Promise<IngestionResult> {
   const startTime = Date.now();
   const fileName = basename(filePath);
+  const log = reqLogger || logger;
 
   try {
     // Validate file path is safe and exists
@@ -217,7 +222,7 @@ async function ingestDocument(filePath: string, namespace?: string): Promise<Ing
       throw new Error(`File not found: ${filePath}`);
     }
 
-    logger.info('Starting document ingestion', { filePath, fileName });
+    log.info('Starting document ingestion', { filePath, fileName });
 
     // Load config
     const config = loadConfig();
@@ -234,44 +239,65 @@ async function ingestDocument(filePath: string, namespace?: string): Promise<Ing
     });
 
     // Parse document
-    logger.debug('Parsing document', { filePath });
+    log.debug('Parsing document', { filePath });
     const text = await parseDocument(filePath);
 
     if (!text || text.trim().length === 0) {
       throw new Error('Document is empty or contains no text');
     }
 
-    logger.debug('Document parsed', {
+    log.debug('Document parsed', {
       filePath,
       textLength: text.length,
     });
 
     // Chunk text
-    logger.debug('Chunking text', { filePath });
+    log.debug('Chunking text', { filePath });
     const chunks = await chunkText(text, filePath);
 
-    logger.info('Text chunked', {
+    log.info('Text chunked', {
       filePath,
       chunksCount: chunks.length,
       avgChunkSize: Math.round(
         chunks.reduce((sum, chunk) => sum + chunk.text.length, 0) / chunks.length
       ),
     });
+    // Optionally short-circuit here for chunk-only experiments
+    if (CHUNK_ONLY) {
+      log.info('CHUNK_ONLY mode enabled — skipping embeddings and vector upserts', {
+        filePath,
+        chunksCount: chunks.length,
+        sampleChunk: chunks[0]?.text?.slice(0, 200),
+      });
+
+      const duration = Date.now() - startTime;
+      log.info('Document ingestion completed (chunk-only)', {
+        filePath,
+        chunksProcessed: chunks.length,
+        durationMs: duration,
+      });
+
+      return {
+        filePath,
+        chunksProcessed: chunks.length,
+        success: true,
+      };
+    }
 
     // Embed chunks
-    logger.debug('Generating embeddings', {
+    log.debug('Generating embeddings', {
       filePath,
       chunksCount: chunks.length,
     });
     const embeddedVectors = await embedChunks(chunks, embeddings);
 
-    logger.info('Embeddings generated', {
+    log.info('Embeddings generated', {
       filePath,
       vectorDimensions: embeddedVectors[0]?.length || 0,
     });
 
     // Upsert to Pinecone (with optional namespace for multi-tenancy)
-    logger.debug('Upserting to Pinecone', {
+    log.debug('Upserting to Pinecone', {
       filePath,
       indexName: config.pineconeIndexName,
       namespace: namespace || '(default)',
@@ -280,7 +306,7 @@ async function ingestDocument(filePath: string, namespace?: string): Promise<Ing
     await upsertToPinecone(chunks, embeddedVectors, config.pineconeIndexName, pinecone, namespace);
 
     const duration = Date.now() - startTime;
-    logger.info('Document ingestion completed', {
+    log.info('Document ingestion completed', {
       filePath,
       chunksProcessed: chunks.length,
       durationMs: duration,
@@ -295,7 +321,7 @@ async function ingestDocument(filePath: string, namespace?: string): Promise<Ing
     const duration = Date.now() - startTime;
     const errorMessage = error instanceof Error ? error.message : String(error);
 
-    logger.error('Document ingestion failed', {
+    log.error('Document ingestion failed', {
       filePath,
       error: errorMessage,
       durationMs: duration,
@@ -317,8 +343,9 @@ async function ingestDocument(filePath: string, namespace?: string): Promise<Ing
  * @param filePaths - Array of file paths to ingest
  * @param namespace - Optional namespace for multi-tenant isolation
  */
-export async function ingestDocuments(filePaths: string[], namespace?: string): Promise<IngestionResult[]> {
-  logger.info('Starting batch document ingestion', {
+export async function ingestDocuments(filePaths: string[], namespace?: string, requestId?: string, reqLogger?: any): Promise<IngestionResult[]> {
+  const log = reqLogger || logger;
+  log.info('Starting batch document ingestion', {
     documentCount: filePaths.length,
     namespace: namespace || '(default)',
   });
@@ -326,7 +353,7 @@ export async function ingestDocuments(filePaths: string[], namespace?: string): 
   const results: IngestionResult[] = [];
 
   for (const filePath of filePaths) {
-    const result = await ingestDocument(filePath, namespace);
+    const result = await ingestDocument(filePath, namespace, requestId, reqLogger);
     results.push(result);
 
     // Small delay between documents to avoid rate limiting
@@ -338,7 +365,7 @@ export async function ingestDocuments(filePaths: string[], namespace?: string): 
   const successful = results.filter((r) => r.success).length;
   const failed = results.filter((r) => !r.success).length;
 
-  logger.info('Batch ingestion completed', {
+  log.info('Batch ingestion completed', {
     total: results.length,
     successful,
     failed,
@@ -360,16 +387,19 @@ export async function ingestText(
   text: string,
   source: string,
   namespace?: string,
-  metadata: Record<string, unknown> = {}
+  metadata: Record<string, unknown> = {},
+  requestId?: string,
+  reqLogger?: any
 ): Promise<IngestionResult> {
   const startTime = Date.now();
+  const log = reqLogger || logger;
 
   try {
     if (!text || text.trim().length === 0) {
       throw new Error('Text content is empty');
     }
 
-    logger.info('Starting text ingestion', {
+    log.info('Starting text ingestion', {
       source,
       textLength: text.length,
       namespace: namespace || '(default)',
@@ -401,15 +431,38 @@ export async function ingestText(
       },
     }));
 
-    logger.info('Text chunked', {
+    log.info('Text chunked', {
       source,
       chunksCount: enrichedChunks.length,
     });
 
+    // Optionally short-circuit here for chunk-only experiments
+    if (CHUNK_ONLY) {
+      log.info('CHUNK_ONLY mode enabled — skipping embeddings and vector upserts', {
+        source,
+        chunksCount: enrichedChunks.length,
+        sampleChunk: enrichedChunks[0]?.text?.slice(0, 200),
+      });
+
+      const duration = Date.now() - startTime;
+      log.info('Text ingestion completed (chunk-only)', {
+        source,
+        chunksProcessed: enrichedChunks.length,
+        namespace: namespace || '(default)',
+        durationMs: duration,
+      });
+
+      return {
+        filePath: source,
+        chunksProcessed: enrichedChunks.length,
+        success: true,
+      };
+    }
+
     // Embed chunks
     const embeddedVectors = await embedChunks(enrichedChunks, embeddings);
 
-    logger.info('Embeddings generated', {
+    log.info('Embeddings generated', {
       source,
       vectorDimensions: embeddedVectors[0]?.length || 0,
     });
@@ -418,7 +471,7 @@ export async function ingestText(
     await upsertToPinecone(enrichedChunks, embeddedVectors, config.pineconeIndexName, pinecone, namespace);
 
     const duration = Date.now() - startTime;
-    logger.info('Text ingestion completed', {
+    log.info('Text ingestion completed', {
       source,
       chunksProcessed: enrichedChunks.length,
       namespace: namespace || '(default)',
@@ -434,7 +487,7 @@ export async function ingestText(
     const duration = Date.now() - startTime;
     const errorMessage = error instanceof Error ? error.message : String(error);
 
-    logger.error('Text ingestion failed', {
+    log.error('Text ingestion failed', {
       source,
       error: errorMessage,
       durationMs: duration,

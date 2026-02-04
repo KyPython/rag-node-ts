@@ -39,12 +39,14 @@ export async function retrieveRelevantPassages(
   query: string,
   topK: number = 5,
   namespace?: string,
-  requestId?: string
+  requestId?: string,
+  reqLogger?: any
 ): Promise<RetrievedPassage[]> {
   const startTime = Date.now();
+  const log = reqLogger || logger;
 
   try {
-    logger.info('Starting retrieval', {
+    log.info('Starting retrieval', {
       queryLength: query.length,
       topK,
     });
@@ -61,10 +63,10 @@ export async function retrieveRelevantPassages(
     const vectorClient = createVectorClient(config);
 
     // Embed the query
-    logger.debug('Embedding query', { queryLength: query.length });
+    log.debug('Embedding query', { queryLength: query.length });
     const queryEmbedding = await embeddings.embedQuery(query);
     
-    logger.debug('Query embedded', {
+    log.debug('Query embedded', {
       vectorDimensions: queryEmbedding.length,
     });
 
@@ -72,7 +74,7 @@ export async function retrieveRelevantPassages(
     // Use Pinecone-compatible index API from factory
     const index = vectorClient.index(config.pineconeIndexName);
 
-    logger.debug('Querying vector index', {
+    log.debug('Querying vector index', {
       indexName: config.pineconeIndexName,
       namespace: namespace || '(default)',
       topK,
@@ -104,7 +106,7 @@ export async function retrieveRelevantPassages(
     });
 
     const duration = Date.now() - startTime;
-    logger.info('Retrieval completed', {
+    log.info('Retrieval completed', {
       queryLength: query.length,
       topK,
       namespace: namespace || '(default)',
@@ -116,7 +118,7 @@ export async function retrieveRelevantPassages(
     try {
       recordRetrievalTrace(requestId, query, passages.length, 0 /* cost placeholder */);
     } catch (err) {
-      logger.warn('Failed to record retrieval trace', { requestId });
+      log.warn('Failed to record retrieval trace', { requestId });
     }
 
     return passages;
@@ -124,7 +126,7 @@ export async function retrieveRelevantPassages(
     const duration = Date.now() - startTime;
     const errorMessage = error instanceof Error ? error.message : String(error);
 
-    logger.error('Retrieval failed', {
+    log.error('Retrieval failed', {
       query,
       error: errorMessage,
       durationMs: duration,

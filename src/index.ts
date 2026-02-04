@@ -259,7 +259,7 @@ app.post('/query', apiKeyAuth({ required: false }), rateLimiter(), async (req: R
     // Step 1: Retrieve relevant passages (with tenant namespace for multi-tenancy)
     const namespace = getTenantNamespace(req);
     retrievalStartTime = Date.now();
-    const retrievedPassages = await retrieveRelevantPassages(body.query, topK, namespace, req.requestId);
+    const retrievedPassages = await retrieveRelevantPassages(body.query, topK, namespace, req.requestId, log);
     retrievalDuration = Date.now() - retrievalStartTime;
 
     log.info('Retrieval completed', {
@@ -333,7 +333,7 @@ app.post('/query', apiKeyAuth({ required: false }), rateLimiter(), async (req: R
       text: truncatedTexts[index] || ctx.text,
     }));
 
-    const answerResult = await generateAnswer(body.query, contexts, undefined, undefined, req.requestId);
+    const answerResult = await generateAnswer(body.query, contexts, undefined, undefined, req.requestId, log);
     answerDuration = Date.now() - answerStartTime;
 
     // Observability: record LLM usage (attempt accurate token counts)
@@ -464,7 +464,7 @@ app.post('/ingest/text', apiKeyAuth({ required: true }), async (req: Request, re
       textLength: body.text.length,
     });
 
-    const result = await ingestText(body.text, body.source, namespace, body.metadata || {});
+    const result = await ingestText(body.text, body.source, namespace, body.metadata || {}, req.requestId, log);
 
     if (!result.success) {
       return res.status(500).json({
@@ -543,7 +543,7 @@ app.post('/ingest/batch', apiKeyAuth({ required: true }), async (req: Request, r
         continue;
       }
 
-      const result = await ingestText(doc.text, doc.source, namespace, doc.metadata || {});
+      const result = await ingestText(doc.text, doc.source, namespace, doc.metadata || {}, req.requestId, log);
       results.push({
         source: result.filePath,
         chunksProcessed: result.chunksProcessed,

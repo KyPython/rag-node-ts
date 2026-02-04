@@ -23,6 +23,7 @@ import { logger } from '../utils/logger.js';
 import { loadConfig } from '../utils/config.js';
 import { createLLMClient } from '../utils/factory.js';
 import { recordLLMTrace } from './langsmith.js';
+import { countTokens } from '../utils/tokenCounter.js';
 
 export interface Context {
   text: string;
@@ -111,12 +112,14 @@ export async function generateAnswer(
   contexts: Context[],
   temperature: number = DEFAULT_TEMPERATURE,
   model: string = DEFAULT_MODEL,
-  requestId?: string
+  requestId?: string,
+  reqLogger?: any
 ): Promise<AnswerResult> {
   const startTime = Date.now();
+  const log = reqLogger || logger;
 
   try {
-    logger.info('Starting answer generation', {
+    log.info('Starting answer generation', {
       queryLength: query.length,
       contextsCount: contexts.length,
       model,
@@ -125,7 +128,7 @@ export async function generateAnswer(
 
     // Validate we have contexts
     if (contexts.length === 0) {
-      logger.warn('No contexts provided for answer generation');
+      log.warn('No contexts provided for answer generation');
       return {
         answer: 'No relevant passages were found to answer this question.',
         citations: [],
@@ -142,13 +145,13 @@ export async function generateAnswer(
     const systemPrompt = buildSystemPrompt();
     const userPrompt = buildUserPrompt(query, contexts);
 
-    logger.debug('Generated prompts', {
+    log.debug('Generated prompts', {
       systemPromptLength: systemPrompt.length,
       userPromptLength: userPrompt.length,
     });
 
     // Generate answer
-    logger.debug('Calling LLM for answer generation');
+    log.debug('Calling LLM for answer generation');
     const messages = [
       new SystemMessage(systemPrompt),
       new HumanMessage(userPrompt),
@@ -163,7 +166,7 @@ export async function generateAnswer(
     const citations = extractCitations(answer, contexts.length - 1);
 
     const duration = Date.now() - startTime;
-    logger.info('Answer generation completed', {
+    log.info('Answer generation completed', {
       queryLength: query.length,
       answerLength: answer.length,
       citationsCount: citations.length,
@@ -173,11 +176,13 @@ export async function generateAnswer(
 
     // Observability: record LLM token usage via LangSmith stub
     try {
-      const promptTokens = Math.ceil(contexts.reduce((s, c) => s + (c.text?.length || 0), 0) / 4);
-      const completionTokens = Math.ceil(answer.length / 4);
+      const combinedPrompt = systemPrompt + '\n' + userPrompt;
+      const promptTokens = await countTokens(combinedPrompt, model);
+      const completionTokens = await countTokens(answer, model);
+      log.info('LLM token usage', { requestId, promptTokens, completionTokens, model });
       recordLLMTrace(requestId, promptTokens, completionTokens, model, 0 /* cost placeholder */);
     } catch (err) {
-      logger.warn('Failed to record LLM trace', { requestId });
+      log.warn('Failed to record LLM trace', { requestId });
     }
 
     return { answer, citations };
@@ -185,7 +190,7 @@ export async function generateAnswer(
     const duration = Date.now() - startTime;
     const errorMessage = error instanceof Error ? error.message : String(error);
 
-    logger.error('Answer generation failed', {
+    log.error('Answer generation failed', {
       query,
       error: errorMessage,
       durationMs: duration,
