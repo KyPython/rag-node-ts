@@ -48,3 +48,5 @@ temp/
 
 # Study materials (private)
 STUDY_GUIDE.md
+
+dist/
