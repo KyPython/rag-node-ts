@@ -14,7 +14,10 @@ export interface RAGConfig {
  * Loads and validates configuration from environment variables
  * @throws Error if any required configuration is missing
  */
-export function loadConfig(): RAGConfig {
+import { logger } from './logger.js';
+
+export function loadConfig(reqLogger?: any): RAGConfig {
+  const log = reqLogger || logger;
   const openaiApiKey = process.env.OPENAI_API_KEY;
   const pineconeApiKey = process.env.PINECONE_API_KEY;
   const pineconeIndexName = process.env.PINECONE_INDEX_NAME;
@@ -27,6 +30,7 @@ export function loadConfig(): RAGConfig {
   if (!pineconeIndexName) missing.push('PINECONE_INDEX_NAME');
 
   if (missing.length > 0) {
+    log.error('Configuration validation failed - missing env vars', { missing });
     throw new Error(
       `Missing required environment variables: ${missing.join(', ')}\n` +
         'Please set these in your .env file or environment.'

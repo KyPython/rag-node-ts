@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import dotenv from 'dotenv';
+dotenv.config();
 /**
  * CLI script for ingesting local documents into the RAG system
  * 

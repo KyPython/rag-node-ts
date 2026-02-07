@@ -225,7 +225,7 @@ async function ingestDocument(filePath: string, namespace?: string, requestId?: 
     log.info('Starting document ingestion', { filePath, fileName });
 
     // Load config
-    const config = loadConfig();
+    const config = loadConfig(log);
 
     // Initialize embeddings
     const embeddings = new OpenAIEmbeddings({
@@ -406,7 +406,7 @@ export async function ingestText(
     });
 
     // Load config
-    const config = loadConfig();
+    const config = loadConfig(log);
 
     // Initialize embeddings
     const embeddings = new OpenAIEmbeddings({

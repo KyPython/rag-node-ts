@@ -20,6 +20,7 @@
 
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 import { logger } from '../utils/logger.js';
+import { llmTTFTHistogram, llmTotalHistogram } from '../metrics/metrics.js';
 import { loadConfig } from '../utils/config.js';
 import { createLLMClient } from '../utils/factory.js';
 import { recordLLMTrace } from './langsmith.js';
@@ -81,7 +82,7 @@ Please answer the question using the context passages above. Cite passages using
  * Extracts citation indices from the answer text
  * Looks for patterns like [p0], [p1], [p2], etc.
  */
-function extractCitations(answer: string, maxContextIndex: number): number[] {
+export function extractCitations(answer: string, maxContextIndex: number): number[] {
   // Match [p0], [p1], [p2], etc., including cases like [p0][p1] together
   const citationPattern = /\[p(\d+)\]/g;
   const citations = new Set<number>();
@@ -116,6 +117,7 @@ export async function generateAnswer(
   reqLogger?: any,
   systemPromptOverride?: string,
   userPromptOverride?: string,
+  llmClientOverride?: any,
 ): Promise<AnswerResult> {
   const startTime = Date.now();
   const log = reqLogger || logger;
@@ -137,11 +139,14 @@ export async function generateAnswer(
       };
     }
 
-    // Load configuration
-    const config = loadConfig();
-
-    // Initialize LLM via factory (OpenAI/Azure)
-    const llm = createLLMClient(config, model, temperature, log);
+    // Initialize LLM: use provided override (tests) or load config and create via factory
+    let llm: any;
+    if (llmClientOverride) {
+      llm = llmClientOverride;
+    } else {
+      const config = loadConfig(log);
+      llm = createLLMClient(config, model, temperature, log);
+    }
 
     // Build prompts (allow overrides from caller)
     const systemPrompt = systemPromptOverride ?? buildSystemPrompt();
@@ -159,10 +164,53 @@ export async function generateAnswer(
       new HumanMessage(userPrompt),
     ];
 
-    const response = await llm.invoke(messages);
-    const answer = typeof response.content === 'string' 
-      ? response.content 
-      : String(response.content);
+    // Measure TTFT (time-to-first-token) and total generation time.
+    const startHr = process.hrtime.bigint();
+    let firstTokenHr: bigint | null = null;
+
+    let response: any;
+    try {
+      const anyLLM = llm as any;
+
+      // Try invoking with streaming callbacks if supported by the client.
+      // We attempt both common callback names to maximize compatibility.
+      const callbacks = {
+        handleLLMNewToken: (_token: string) => {
+          if (!firstTokenHr) firstTokenHr = process.hrtime.bigint();
+        },
+        onLLMNewToken: (_token: string) => {
+          if (!firstTokenHr) firstTokenHr = process.hrtime.bigint();
+        },
+      };
+
+      try {
+        // Some LangChain LLMs accept a second options arg with `callbacks`.
+        response = await anyLLM.invoke(messages, { callbacks });
+      } catch (err) {
+        // Fallback: try without callbacks
+        response = await anyLLM.invoke(messages);
+      }
+    } catch (err) {
+      // As a last fallback, call invoke directly
+      response = await llm.invoke(messages);
+    }
+
+    const endHr = process.hrtime.bigint();
+    const totalMs = Number(endHr - startHr) / 1e6;
+    const ttftMs = firstTokenHr ? Number(firstTokenHr - startHr) / 1e6 : totalMs;
+
+    // Observe metrics (Prometheus expects seconds)
+    try {
+      const modelLabel = model || 'unknown';
+      llmTTFTHistogram.observe({ model: modelLabel }, ttftMs / 1000);
+      llmTotalHistogram.observe({ model: modelLabel }, totalMs / 1000);
+    } catch (err) {
+      // Swallow metric errors - shouldn't block response
+    }
+
+    const answer = typeof response?.content === 'string'
+      ? response.content
+      : String(response?.content || '');
 
     // Extract citations
     const citations = extractCitations(answer, contexts.length - 1);
@@ -174,6 +222,8 @@ export async function generateAnswer(
       citationsCount: citations.length,
       citations,
       durationMs: duration,
+      llm_total_ms: Math.round(totalMs),
+      llm_ttft_ms: Math.round(ttftMs),
     });
 
     // Observability: record LLM token usage via LangSmith stub
@@ -183,6 +233,8 @@ export async function generateAnswer(
       const completionTokens = await countTokens(answer, model);
       log.info('LLM token usage', { requestId, promptTokens, completionTokens, model });
       recordLLMTrace(requestId, promptTokens, completionTokens, model, 0 /* cost placeholder */);
+      // Also log TTFT + total timings
+      log.info('LLM timings', { requestId, ttftMs: Math.round(ttftMs), totalMs: Math.round(totalMs) });
     } catch (err) {
       log.warn('Failed to record LLM trace', { requestId });
     }

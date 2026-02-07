@@ -1,4 +1,4 @@
-#!/usr/bin/env ts-node-dev
+#!/usr/bin/env node
 /**
  * Benchmark Script for RAG API
  * 
@@ -24,6 +24,8 @@ interface BenchmarkOptions {
   concurrency: number;
   requests: number;
   cacheMode: 'on' | 'off';
+  mode?: 'mock' | 'real';
+  confirmReal?: boolean;
 }
 
 interface RequestResult {
@@ -58,6 +60,7 @@ function parseArgs(): BenchmarkOptions {
     concurrency: 5,
     requests: 20,
     cacheMode: 'on',
+    confirmReal: false,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -78,10 +81,33 @@ function parseArgs(): BenchmarkOptions {
         options.cacheMode = value;
         i++;
       }
+    } else if (arg === '--mode' && value) {
+      if (value === 'mock' || value === 'real') {
+        options.mode = value as any;
+        i++;
+      }
+    } else if (arg === '--confirm-real') {
+      options.confirmReal = true;
+    } else if (typeof arg === 'string' && arg.startsWith('--mode=')) {
+      const v = arg.split('=')[1];
+      if (v === 'mock' || v === 'real') options.mode = v as any;
     }
   }
 
   return options;
+}
+
+function printHelp() {
+  console.log('\nUsage: node benchmark/benchmark.ts [options]');
+  console.log('Options:');
+  console.log('  --url <url>            Target server URL (default: http://localhost:3000)');
+  console.log('  --concurrency <n>      Number of concurrent requests (default: 5)');
+  console.log('  --requests <n>         Total number of requests to send (default: 20)');
+  console.log("  --cacheMode on|off     Whether to use cache (default: on)");
+  console.log("  --mode mock|real       Run in 'mock' (safe) or 'real' mode (requires ALLOW_REAL_BENCH=1)");
+  console.log('  --confirm-real         Required when running with --mode=real to acknowledge real API usage and costs');
+  console.log('  --help, -h             Show this help message');
+  console.log('');
 }
 
 /**
@@ -93,7 +119,7 @@ async function makeRequest(
   cacheMode: 'on' | 'off'
 ): Promise<RequestResult> {
   const startTime = performance.now();
-
+  // Default behavior: real HTTP request. Mock mode will override caller to use simulated requests.
   try {
     const cacheParam = cacheMode === 'on' ? '' : '?cacheMode=off';
     const response = await fetch(`${url}/query${cacheParam}`, {
@@ -152,13 +178,27 @@ async function runBenchmark(options: BenchmarkOptions): Promise<RequestResult[]>
   console.log(`   Requests: ${options.requests}`);
   console.log(`   Concurrency: ${options.concurrency}`);
   console.log(`   Cache Mode: ${options.cacheMode}\n`);
+  console.log(`   Mode: ${options.mode ?? 'real'}\n`);
 
   // Process requests in batches with concurrency limit
   for (let i = 0; i < queries.length; i += options.concurrency) {
     const batch = queries.slice(i, i + options.concurrency);
-    const batchPromises = batch.map((query) =>
-      makeRequest(options.url, query, options.cacheMode)
-    );
+    const batchPromises = batch.map((query) => {
+      if (options.mode === 'mock') {
+        // Simulate a request: TTFT 40-180ms, total 120-700ms
+        return (async () => {
+          const start = performance.now();
+          const ttft = 40 + Math.random() * 140;
+          await new Promise((r) => setTimeout(r, ttft));
+          const remainder = 80 + Math.random() * 580;
+          await new Promise((r) => setTimeout(r, remainder));
+          const duration = performance.now() - start;
+          return { success: true, duration } as RequestResult;
+        })();
+      }
+
+      return makeRequest(options.url, query, options.cacheMode);
+    });
 
     const batchResults = await Promise.all(batchPromises);
     results.push(...batchResults);
@@ -247,6 +287,32 @@ function printResults(stats: ReturnType<typeof calculateStats>, options: Benchma
  */
 async function main() {
   const options = parseArgs();
+
+  // Quick help
+  const rawArgs = process.argv.slice(2);
+  if (rawArgs.includes('--help') || rawArgs.includes('-h')) {
+    printHelp();
+    process.exit(0);
+  }
+
+  // Safety guard: require explicit env var to allow real-mode benchmarking
+  if (options.mode === 'real') {
+    if (process.env.ALLOW_REAL_BENCH !== '1') {
+      console.error("Refusing to run benchmark in 'real' mode. Set ALLOW_REAL_BENCH=1 to opt in.");
+      process.exit(2);
+    }
+
+    if (!process.env.OPENAI_API_KEY) {
+      console.error("Refusing to run benchmark in 'real' mode: missing OPENAI_API_KEY environment variable.");
+      console.error("Set OPENAI_API_KEY and retry, or run with --mode=mock for safe testing.");
+      process.exit(2);
+    }
+
+    if (!options.confirmReal) {
+      console.error("Refusing to run benchmark in 'real' mode. Pass --confirm-real to acknowledge real API usage and possible costs.");
+      process.exit(2);
+    }
+  }
 
   try {
     const results = await runBenchmark(options);

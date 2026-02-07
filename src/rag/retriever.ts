@@ -20,6 +20,7 @@ import { logger } from '../utils/logger.js';
 import { loadConfig } from '../utils/config.js';
 import { createVectorClient } from '../utils/factory.js';
 import { recordRetrievalTrace } from '../llm/langsmith.js';
+import { retrievalPrecisionGauge } from '../metrics/metrics.js';
 
 export interface RetrievedPassage {
   text: string;
@@ -52,7 +53,7 @@ export async function retrieveRelevantPassages(
     });
 
     // Load configuration
-    const config = loadConfig();
+    const config = loadConfig(log);
 
     // Initialize embeddings
     const embeddings = new OpenAIEmbeddings({
@@ -105,6 +106,20 @@ export async function retrieveRelevantPassages(
       };
     });
 
+    // Compute retrieval precision if we can infer relevance
+    try {
+      // If metadata contains an explicit `relevant` boolean flag, use it
+      const relevantFromMetadata = passages.filter((p) => Boolean(p.metadata?.relevant)).length;
+
+      // Compute precision@K using metadata flag when available
+      if (relevantFromMetadata > 0) {
+        const precision = relevantFromMetadata / topK;
+        retrievalPrecisionGauge.set({ top_k: String(topK) }, precision);
+        log.info('Computed retrieval precision from metadata', { topK, relevantFromMetadata, precision });
+      }
+    } catch (err) {
+      // ignore metric errors
+    }
     const duration = Date.now() - startTime;
     log.info('Retrieval completed', {
       queryLength: query.length,

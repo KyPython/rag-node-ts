@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build-test-lint:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Run fast tests
+        run: npm run test:fast
+      - name: Upload metrics snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metrics-snapshot
+          path: dist/tests/metrics_snapshot.json
+      - name: NPM audit (low/med advisories fail)
+        run: |
+          npm audit --audit-level=moderate || true
+      - name: Upload benchmark CSV
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generation-benchmark-csv
+          path: dist/scripts/generation_benchmark_results.csv

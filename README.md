@@ -398,6 +398,59 @@ npm run build
 CHUNK_ONLY=true node dist/scripts/sweepChunking.js
 ```
 
+## Release & Changelog
+
+This repository is configured to publish changelogs and create releases automatically using `semantic-release` in GitHub Actions.
+
+- Workflow: `.github/workflows/release.yml` runs `semantic-release` on semver tags (e.g. `v1.2.3`).
+- Pre-release checks: `.github/workflows/pre-release.yml` runs `lint`, `build`, and `test` on pull requests.
+
+How to create a release:
+
+1. Create a signed semver tag and push it to GitHub:
+```bash
+git tag v1.2.3
+git push origin v1.2.3
+```
+2. The `release` workflow will run and `semantic-release` will:
+  - Analyze commits to determine the next version
+  - Update `CHANGELOG.md`
+  - Commit the changelog and `package.json` changes
+  - Create a GitHub release with release notes
+
+Required repository secrets for full automation:
+- `GITHUB_TOKEN` (provided automatically by Actions for repository operations)
+- `NPM_TOKEN` (optional) — set this secret if you want `semantic-release` to publish packages to npm. If not set, the workflow will still create a GitHub release and changelog.
+
+If you prefer manual releases, you can still tag locally and push as shown above; semantic-release will do the rest in CI.
+
+## Interactive ground-truth editor
+
+Use the interactive editor to preview chunks from the GDPR sample and set per-config ground-truth indices in `samples/ground_truth.json`.
+
+Interactive mode (asks for action and confirmation):
+
+```bash
+# build first
+npm run build
+
+# launch interactive editor
+node dist/scripts/editGroundTruth.js --chunkSize=500 --chunkOverlap=100 --queryIndex=0
+```
+
+Non-interactive mode (write indices directly):
+
+```bash
+node dist/scripts/editGroundTruth.js --chunkSize=500 --chunkOverlap=100 --queryIndex=0 --indices=0,2 --file=samples/ground_truth.json
+```
+
+Actions in interactive mode:
+- `a`: add/update a config key (default key shown as `c{size}_o{overlap}`)
+- `d`: delete a config key
+- `q`: quit without changes
+
+The script prints chunk previews so you can choose indices visually before writing.
+
 How to run a single CHUNK_ONLY ingest locally:
 
 ```bash

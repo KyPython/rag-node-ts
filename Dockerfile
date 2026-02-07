@@ -1,3 +1,20 @@
+FROM node:20-alpine
+WORKDIR /app
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+COPY package.json package-lock.json* ./
+RUN npm ci --only=production || npm install
+COPY . ./
+RUN npm run build
+RUN chown -R appuser:appgroup /app
+
+# Small wrapper script to run benchmark (non-root)
+COPY scripts/run_benchmark.sh /usr/local/bin/run_benchmark.sh
+RUN chmod +x /usr/local/bin/run_benchmark.sh
+
+USER appuser
+ENV NODE_ENV=production
+# Default command runs the mock generation benchmark (safe)
+ENTRYPOINT ["/usr/local/bin/run_benchmark.sh"]
 # ============================================================================
 # RAG-as-a-Service Production Dockerfile
 # 

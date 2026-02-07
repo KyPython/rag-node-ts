@@ -27,7 +27,7 @@ import { apiKeyAuth, getTenantNamespace } from './middleware/apiKeyAuth.js';
 import { rateLimiter } from './middleware/rateLimiter.js';
 import { errorHandler, AppError, validationError } from './middleware/errorHandler.js';
 import { metricsMiddleware, metricsHandler } from './metrics/metrics.js';
-import { getCache, generateCacheKey } from './cache/cache.js';
+import { getCache, generateCacheKey, semanticGet, semanticSet } from './cache/cache.js';
 import { truncateContexts } from './utils/truncation.js';
 import { trackUsage } from './services/usageTracker.js';
 import { adminRouter } from './routes/admin.js';
@@ -214,10 +214,30 @@ app.post('/query', apiKeyAuth({ required: false }), rateLimiter(), async (req: R
       );
     }
 
-    // Check cache if enabled
+    // Semantic cache lookup (vector-based) when enabled
     if (cacheEnabled) {
+      const semanticCached = await semanticGet(body.query, 0.95, log).catch((err) => null);
+      if (semanticCached) {
+        cacheHit = true;
+        const totalDuration = Date.now() - requestStartTime;
+        log.info('Query served from semantic cache', {
+          requestId: req.requestId,
+          query: body.query,
+          mode,
+          durationMs: totalDuration,
+        });
+
+        res.json({
+          requestId: req.requestId,
+          data: JSON.parse(semanticCached),
+          _semantic_cached: true,
+        });
+        return;
+      }
+
+      // Fallback to regular cache (redis/in-memory)
       const cacheKey = generateCacheKey(body.query, topK, mode);
-      const cachedResponse = await cache.get(cacheKey);
+      const cachedResponse = await cache.get(cacheKey, log);
 
       if (cachedResponse) {
         cacheHit = true;
@@ -301,7 +321,7 @@ app.post('/query', apiKeyAuth({ required: false }), rateLimiter(), async (req: R
         const cacheKey = generateCacheKey(body.query, topK, mode);
         const responseToCache = JSON.stringify(response.data);
         
-        await cache.set(cacheKey, responseToCache, CACHE_TTL_SECONDS).catch((err) => {
+        await cache.set(cacheKey, responseToCache, CACHE_TTL_SECONDS, log).catch((err) => {
           log.warn('Failed to cache response', {
             requestId: req.requestId,
             error: err instanceof Error ? err.message : String(err),
@@ -416,7 +436,10 @@ app.post('/query', apiKeyAuth({ required: false }), rateLimiter(), async (req: R
       const cacheKey = generateCacheKey(body.query, topK, mode);
       const responseToCache = JSON.stringify(response.data);
       
-      await cache.set(cacheKey, responseToCache, CACHE_TTL_SECONDS).catch((err) => {
+      // Populate semantic cache (vector) asynchronously, don't block response
+      semanticSet(body.query, responseToCache, log).catch(() => {});
+
+      await cache.set(cacheKey, responseToCache, CACHE_TTL_SECONDS, log).catch((err) => {
         // Log but don't fail the request if caching fails
         log.warn('Failed to cache response', {
           requestId: req.requestId,

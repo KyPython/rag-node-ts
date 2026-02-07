@@ -1,0 +1,56 @@
+[
+  {
+    "query": "How long to report a data breach under GDPR?",
+    "groundTruth": {
+      "default": [
+        0,
+        2
+      ],
+      "c200_o0": [
+        0,
+        2
+      ],
+      "c800_o0": [
+        0,
+        2
+      ],
+      "c500_o100": [
+        0,
+        2
+      ]
+    }
+  },
+  {
+    "query": "What are the key principles of GDPR?",
+    "groundTruth": {
+      "default": [
+        1,
+        2,
+        3
+      ],
+      "c500_o100": [
+        4,
+        5
+      ],
+      "c700_o0": [
+        1,
+        2,
+        3
+      ]
+    }
+  },
+  {
+    "query": "When is notification to individuals required?",
+    "groundTruth": {
+      "default": [
+        3
+      ],
+      "c400_o50": [
+        3
+      ],
+      "c600_o0": [
+        3
+      ]
+    }
+  }
+]

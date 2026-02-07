@@ -13,7 +13,7 @@ export type LLMClient = any;
 
 export function createVectorClient(config?: RAGConfig, reqLogger?: any): VectorClient {
   const log = reqLogger || logger;
-  const cfg = config || loadConfig();
+  const cfg = config || loadConfig(log);
   const backend = process.env.VECTOR_BACKEND || 'pinecone';
 
   log.info('Factory: creating vector client', { backend });
@@ -40,7 +40,7 @@ export function createVectorClient(config?: RAGConfig, reqLogger?: any): VectorC
 
 export function createLLMClient(config?: RAGConfig, model?: string, temperature?: number, reqLogger?: any): LLMClient {
   const log = reqLogger || logger;
-  const cfg = config || loadConfig();
+  const cfg = config || loadConfig(log);
   const backend = process.env.LLM_BACKEND || 'openai';
 
   log.info('Factory: creating LLM client', { backend, model });
