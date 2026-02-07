@@ -1,0 +1,13 @@
+groups:
+  - name: rag-alerts
+    rules:
+      - alert: LowSemanticCacheHitRate
+        expr: |
+          (sum(rate(cache_hits_total{backend="vector"}[5m]))
+           / (sum(rate(cache_hits_total{backend="vector"}[5m])) + sum(rate(cache_misses_total{backend="vector"}[5m])))) < 0.6
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Low semantic cache hit rate"
+          description: "Semantic cache hit rate is below 60% for 5 minutes. Investigate cache layer or ingestion quality."

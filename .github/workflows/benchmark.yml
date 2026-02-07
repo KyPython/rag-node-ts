@@ -19,6 +19,9 @@ jobs:
         run: npm ci
       - name: Run fast tests
         run: npm run test:fast
+      - name: CI metrics threshold check
+        run: node scripts/ci_check_metrics.js --file dist/tests/metrics_snapshot.json --backend vector --threshold 0.6
+        continue-on-error: false
       - name: Upload metrics snapshot
         if: always()
         uses: actions/upload-artifact@v4
